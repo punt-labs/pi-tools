@@ -42,7 +42,7 @@ Pin an installation to a tag or commit by adding `@<ref>`:
 pi install git:github.com/punt-labs/pi-tools@<commit-sha>
 ```
 
-The package loads both extensions by default. Use `pi config` to disable an
+The package loads all extensions by default. Use `pi config` to disable an
 extension you do not need. If the Biff bridge is enabled without an installed
 and authenticated `biff` command, Pi displays a startup warning; the `keep`
 extension remains usable.
@@ -97,7 +97,9 @@ For example:
 
 Use `/every status` to inspect the active schedule and `/every stop` to cancel
 it. Timer ticks that occur while the agent is busy coalesce into one pending
-delivery, and all schedules are cancelled when the Pi session shuts down.
+delivery, and all schedules are cancelled when the Pi session shuts down. See
+[`docs/SCHEDULING.md`](docs/SCHEDULING.md) for delivery semantics and complete
+PR, Biff, and Vox examples.
 
 ### `biff-bridge`
 
@@ -163,7 +165,8 @@ make test-integration
 
 The relay suite is intentionally excluded from `make check` so the default gate
 remains deterministic and offline. See [`docs/TESTING.md`](docs/TESTING.md) for
-the full test strategy.
+the full test strategy and [`DESIGN.md`](DESIGN.md) for accepted architectural
+decisions.
 
 ## Repository scope
 
