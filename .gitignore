@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.tmp/
+.envrc.local
+.DS_Store

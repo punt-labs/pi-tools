@@ -1,0 +1,9 @@
+directory:
+  labels:
+    pi-tools: repo:pit
+
+backup:
+  enabled: false
+export:
+  auto: false
+  git-add: false

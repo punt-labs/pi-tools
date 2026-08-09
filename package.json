@@ -1,0 +1,36 @@
+{
+  "name": "@punt-labs/pi-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared Punt Labs pi extensions, skills, prompts, and themes.",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "scripts": {
+    "check": "npm run typecheck && npm run lint:md",
+    "typecheck": "tsc --noEmit",
+    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\""
+  },
+  "pi": {
+    "extensions": [
+      "extensions"
+    ],
+    "skills": [
+      "skills"
+    ],
+    "prompts": [
+      "prompts"
+    ],
+    "themes": [
+      "themes"
+    ]
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "@types/node": "latest",
+    "markdownlint-cli2": "latest",
+    "typescript": "latest"
+  }
+}
