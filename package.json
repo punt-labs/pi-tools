@@ -10,7 +10,7 @@
   "scripts": {
     "check": "npm run typecheck && npm run lint:md",
     "typecheck": "tsc --noEmit",
-    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\""
+    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.direnv\""
   },
   "pi": {
     "extensions": [
