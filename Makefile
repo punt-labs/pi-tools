@@ -1,7 +1,7 @@
 NPM ?= npm
 MARKDOWNLINT ?= markdownlint-cli2
 
-.PHONY: help check lint typecheck test docs check-docs format format-check clean coverage tools smoke-pi
+.PHONY: help check lint typecheck test test-integration docs check-docs format format-check clean coverage tools smoke-pi
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-24s %s\n", $$1, $$2}'
@@ -22,6 +22,9 @@ format: ## Auto-format with prettier
 
 test: ## Run unit tests
 	$(NPM) exec vitest -- run
+
+test-integration: ## Run real-relay biff bridge integration test
+	BIFF_INTEGRATION=1 $(NPM) exec vitest -- run tests/biff-bridge.integration.test.ts
 
 docs: check-docs ## Lint markdown
 

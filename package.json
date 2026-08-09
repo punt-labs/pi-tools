@@ -13,6 +13,7 @@
 		"lint": "eslint .",
 		"format:check": "prettier --check .",
 		"test": "vitest run",
+		"test:integration": "BIFF_INTEGRATION=1 vitest run tests/biff-bridge.integration.test.ts",
 		"coverage": "vitest run --coverage"
 	},
 	"pi": {

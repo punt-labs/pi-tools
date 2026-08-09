@@ -10,6 +10,9 @@ the pi smoke test runs without external dependencies.
 - TS typecheck: all extensions and lib code compile cleanly.
   Automated.
 - Markdown lint: all docs pass markdownlint. Automated.
+- Biff real-relay integration: a fake Pi host and two owned biff
+  endpoints verify the bridge lifecycle and message round trip.
+  Automated but requires tmux, biff authentication, and relay access.
 - Pi RPC smoke: extension loads in a real pi session, agent calls
   tools, results verified. Automated but requires pi binary and
   model API key.
@@ -24,6 +27,7 @@ Unit tests live in `tests/` and cover pure logic in `lib/`:
   formatting with fixed timestamps
 - `keep.test.ts` — argument parsing for two-arg and three-arg
   patterns
+- `tmux-wait.test.ts` — exact command framing and prompt completion
 
 These tests have no external dependencies. They verify input/output
 behavior of extracted functions.
@@ -37,6 +41,26 @@ without errors.
 
 All checked-in markdown must pass markdownlint, excluding
 `node_modules` and `.direnv`.
+
+## Biff real-relay integration
+
+`biff-bridge.integration.test.ts` owns both sides of a real message
+exchange. It verifies:
+
+- extension startup creates and names a durable biff session
+- the bridge sends a message that a peer receives
+- a peer message triggers the automatic unread notification
+- `biff_read` returns the complete inbound message
+- extension shutdown removes its tmux session
+- test cleanup removes both endpoints even after a failed assertion
+
+Run separately because it requires local biff authentication and relay
+access:
+
+- `make test-integration`
+
+The test is skipped during `make check`, so unit and static gates remain
+offline and deterministic.
 
 ## Pi RPC smoke test
 
@@ -59,6 +83,10 @@ Before committing code changes:
 
 - `make check`
 
-Before changing tool behavior:
+Before changing biff bridge behavior:
+
+- `make test-integration` (when biff and relay access are available)
+
+Before changing the general tool surface:
 
 - `make smoke-pi` (when pi and credentials are available)
