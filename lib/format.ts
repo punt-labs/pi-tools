@@ -1,5 +1,14 @@
 import type { Kept } from "./registry.js";
 
+export function stripWatchHeader(text: string): string {
+	const lines = text.split("\n");
+	if (lines.length > 0 && /^Every\s+[\d.]+s:/.test(lines[0])) {
+		const start = lines[1]?.trim() === "" ? 2 : 1;
+		return lines.slice(start).join("\n").trimStart();
+	}
+	return text;
+}
+
 export function timeSince(iso: string, now?: number): string {
 	const seconds = Math.floor(((now ?? Date.now()) - new Date(iso).getTime()) / 1000);
 	if (seconds < 60) return String(seconds) + "s";

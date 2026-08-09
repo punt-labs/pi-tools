@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { parseTwoArgs, parseThreeArgs } from "../lib/parse.js";
 import * as registry from "../lib/registry.js";
-import { formatList } from "../lib/format.js";
+import { formatList, stripWatchHeader } from "../lib/format.js";
 
 const exec = promisify(execFile);
 
@@ -118,7 +118,9 @@ export default function keepExtension(pi: ExtensionAPI) {
 			const params = rawParams as { name: string };
 			try {
 				const r = await tmux("capture-pane", "-t", registry.sessionName(params.name), "-p");
-				const output = r.stdout.trimEnd();
+				const kept = registry.get(params.name);
+				const output =
+					kept?.mode === "watch" ? stripWatchHeader(r.stdout.trimEnd()) : r.stdout.trimEnd();
 				return result(output || `${params.name}: pane is empty`);
 			} catch (error) {
 				return result(`Failed to capture: ${errorMessage(error)}`);
@@ -300,7 +302,10 @@ async function cmdCapture(args: string, ctx: ExtensionCommandContext) {
 	}
 	try {
 		const r = await tmux("capture-pane", "-t", registry.sessionName(name), "-p");
-		ctx.ui.notify(r.stdout.trimEnd() || `${name}: pane is empty`, "info");
+		const kept = registry.get(name);
+		const output =
+			kept?.mode === "watch" ? stripWatchHeader(r.stdout.trimEnd()) : r.stdout.trimEnd();
+		ctx.ui.notify(output || `${name}: pane is empty`, "info");
 	} catch (error) {
 		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
 	}
