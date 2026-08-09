@@ -11,6 +11,7 @@ const POLL_INTERVAL_MS = 15_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let lastUnreadNotified = 0;
+let commandInFlight = false;
 
 async function tmux(...args: string[]) {
 	return exec("tmux", args);
@@ -41,7 +42,12 @@ async function ensureBiffRepl(): Promise<string | null> {
 async function biffCommand(cmd: string): Promise<string> {
 	const err = await ensureBiffRepl();
 	if (err) return "biff REPL not running: " + err;
-	return sendAndWait(KEEP_SESSION, cmd, BIFF_PROMPT);
+	commandInFlight = true;
+	try {
+		return await sendAndWait(KEEP_SESSION, cmd, BIFF_PROMPT);
+	} finally {
+		commandInFlight = false;
+	}
 }
 
 function result(text: string) {
@@ -183,6 +189,7 @@ async function pollUnread(ctx: {
 		notify(msg: string, type: "info" | "warning" | "error"): void;
 	};
 }) {
+	if (commandInFlight) return;
 	try {
 		const output = await biffCommand("status");
 		const match = /unread:\s*(\d+)/.exec(output);
