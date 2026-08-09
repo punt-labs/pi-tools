@@ -19,8 +19,178 @@ interface Kept {
 const registry = new Map<string, Kept>();
 
 export default function keepExtension(pi: ExtensionAPI) {
+	pi.registerTool({
+		name: "keep_watch",
+		label: "Keep Watch",
+		description:
+			"Start a command in a tmux session that refreshes every N seconds. " +
+			"Use for PR check monitoring, periodic status checks, or any repeating command.",
+		parameters: {
+			type: "object",
+			properties: {
+				name: { type: "string", description: "Short name for this watch session" },
+				interval: { type: "number", description: "Refresh interval in seconds" },
+				command: { type: "string", description: "Shell command to watch" },
+			},
+			required: ["name", "interval", "command"],
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as { name: string; interval: number; command: string };
+			const session = PREFIX + params.name;
+			if (registry.has(params.name)) {
+				return result(`${params.name} is already running`);
+			}
+			try {
+				await tmux("new-session", "-d", "-s", session, `watch -n ${params.interval} ${params.command}`);
+				registry.set(params.name, {
+					name: params.name,
+					session,
+					mode: "watch",
+					command: params.command,
+					interval: params.interval,
+					startedAt: new Date().toISOString(),
+				});
+				return result(`Started watch: ${params.name} (every ${params.interval}s)`);
+			} catch (error) {
+				return result(`Failed to start: ${errorMessage(error)}`);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "keep_run",
+		label: "Keep Run",
+		description:
+			"Start a long-running or interactive command in a tmux session. " +
+			"Use for biff REPLs, dev servers, or any process that should stay alive.",
+		parameters: {
+			type: "object",
+			properties: {
+				name: { type: "string", description: "Short name for this session" },
+				command: { type: "string", description: "Shell command to run" },
+			},
+			required: ["name", "command"],
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as { name: string; command: string };
+			const session = PREFIX + params.name;
+			if (registry.has(params.name)) {
+				return result(`${params.name} is already running`);
+			}
+			try {
+				await tmux("new-session", "-d", "-s", session, params.command);
+				registry.set(params.name, {
+					name: params.name,
+					session,
+					mode: "run",
+					command: params.command,
+					startedAt: new Date().toISOString(),
+				});
+				return result(`Started: ${params.name}`);
+			} catch (error) {
+				return result(`Failed to start: ${errorMessage(error)}`);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "keep_capture",
+		label: "Keep Capture",
+		description:
+			"Capture current visible output from a kept tmux session. " +
+			"Returns the pane contents without attaching.",
+		parameters: {
+			type: "object",
+			properties: {
+				name: { type: "string", description: "Name of the kept session to capture" },
+			},
+			required: ["name"],
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as { name: string };
+			try {
+				const r = await tmux("capture-pane", "-t", PREFIX + params.name, "-p");
+				const output = r.stdout.trimEnd();
+				return result(output || `${params.name}: pane is empty`);
+			} catch (error) {
+				return result(`Failed to capture: ${errorMessage(error)}`);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "keep_send",
+		label: "Keep Send",
+		description:
+			"Send a line of input to a kept tmux session. " +
+			"Use for interactive REPLs like biff where you need to type commands.",
+		parameters: {
+			type: "object",
+			properties: {
+				name: { type: "string", description: "Name of the kept session" },
+				text: { type: "string", description: "Text to send (Enter is appended automatically)" },
+			},
+			required: ["name", "text"],
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as { name: string; text: string };
+			try {
+				await tmux("send-keys", "-t", PREFIX + params.name, params.text, "Enter");
+				return result(`Sent to ${params.name}`);
+			} catch (error) {
+				return result(`Failed to send: ${errorMessage(error)}`);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "keep_stop",
+		label: "Keep Stop",
+		description: "Stop a kept tmux session and remove it from the registry.",
+		parameters: {
+			type: "object",
+			properties: {
+				name: { type: "string", description: "Name of the kept session to stop" },
+			},
+			required: ["name"],
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as { name: string };
+			try {
+				await tmux("kill-session", "-t", PREFIX + params.name);
+				registry.delete(params.name);
+				return result(`Stopped: ${params.name}`);
+			} catch (error) {
+				return result(`Failed to stop: ${errorMessage(error)}`);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "keep_list",
+		label: "Keep List",
+		description: "List all active kept tmux sessions with their mode, age, and command.",
+		parameters: { type: "object", properties: {} },
+		async execute() {
+			if (registry.size === 0) {
+				return result("No active keep sessions");
+			}
+			const lines: string[] = [];
+			for (const kept of registry.values()) {
+				const age = timeSince(kept.startedAt);
+				if (kept.mode === "watch") {
+					lines.push(`${kept.name} [watch ${kept.interval}s] ${age} — ${kept.command}`);
+				} else {
+					lines.push(`${kept.name} [run] ${age} — ${kept.command}`);
+				}
+			}
+			return result(lines.join("\n"));
+		},
+	});
+
+	// Also register a slash command for direct human use
 	pi.registerCommand("keep", {
-		description: "Manage long-running tmux processes: watch, run, capture, send, stop, list",
+		description: "Manage kept tmux sessions: watch, run, capture, send, stop, list, help",
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
 			const spaceIdx = trimmed.indexOf(" ");
@@ -29,17 +199,17 @@ export default function keepExtension(pi: ExtensionAPI) {
 
 			switch (sub) {
 				case "watch":
-					return doWatch(rest, ctx);
+					return cmdWatch(rest, ctx);
 				case "run":
-					return doRun(rest, ctx);
+					return cmdRun(rest, ctx);
 				case "capture":
-					return doCapture(rest, ctx);
+					return cmdCapture(rest, ctx);
 				case "send":
-					return doSend(rest, ctx);
+					return cmdSend(rest, ctx);
 				case "stop":
-					return doStop(rest, ctx);
+					return cmdStop(rest, ctx);
 				case "list":
-					return doList(ctx);
+					return cmdList(ctx);
 				case "":
 				case "help":
 					ctx.ui.notify(
@@ -60,73 +230,87 @@ export default function keepExtension(pi: ExtensionAPI) {
 	});
 }
 
-async function doWatch(args: string, ctx: ExtensionCommandContext) {
+function result(text: string) {
+	return { content: [{ type: "text" as const, text }], details: {} };
+}
+
+async function tmux(...args: string[]) {
+	return exec("tmux", args);
+}
+
+async function cmdWatch(args: string, ctx: ExtensionCommandContext) {
 	const parsed = parseThreeArgs(args);
 	if (!parsed) {
 		ctx.ui.notify("Usage: /keep watch <name> <seconds> <command>", "error");
 		return;
 	}
-	const { first: name, second: intervalStr, rest: command } = parsed;
-	const interval = parseInt(intervalStr, 10);
+	const interval = parseInt(parsed.second, 10);
 	if (isNaN(interval) || interval <= 0) {
-		ctx.ui.notify("Interval must be a positive number of seconds", "error");
+		ctx.ui.notify("Interval must be a positive number", "error");
 		return;
 	}
-	const session = PREFIX + name;
-
-	if (registry.has(name)) {
-		ctx.ui.notify(`${name} is already running`, "error");
+	const session = PREFIX + parsed.first;
+	if (registry.has(parsed.first)) {
+		ctx.ui.notify(`${parsed.first} is already running`, "error");
 		return;
 	}
-
 	try {
-		await tmux("new-session", "-d", "-s", session, `watch -n ${interval} ${command}`);
-		registry.set(name, { name, session, mode: "watch", command, interval, startedAt: new Date().toISOString() });
-		ctx.ui.notify(`Started watch: ${name} (every ${interval}s)`, "info");
+		await tmux("new-session", "-d", "-s", session, `watch -n ${interval} ${parsed.rest}`);
+		registry.set(parsed.first, {
+			name: parsed.first,
+			session,
+			mode: "watch",
+			command: parsed.rest,
+			interval,
+			startedAt: new Date().toISOString(),
+		});
+		ctx.ui.notify(`Started watch: ${parsed.first} (every ${interval}s)`, "info");
 	} catch (error) {
-		ctx.ui.notify(`Failed to start: ${errorMessage(error)}`, "error");
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
 	}
 }
 
-async function doRun(args: string, ctx: ExtensionCommandContext) {
+async function cmdRun(args: string, ctx: ExtensionCommandContext) {
 	const parsed = parseTwoArgs(args);
 	if (!parsed) {
 		ctx.ui.notify("Usage: /keep run <name> <command>", "error");
 		return;
 	}
-	const { first: name, rest: command } = parsed;
-	const session = PREFIX + name;
-
-	if (registry.has(name)) {
-		ctx.ui.notify(`${name} is already running`, "error");
+	const session = PREFIX + parsed.first;
+	if (registry.has(parsed.first)) {
+		ctx.ui.notify(`${parsed.first} is already running`, "error");
 		return;
 	}
-
 	try {
-		await tmux("new-session", "-d", "-s", session, command);
-		registry.set(name, { name, session, mode: "run", command, startedAt: new Date().toISOString() });
-		ctx.ui.notify(`Started: ${name}`, "info");
+		await tmux("new-session", "-d", "-s", session, parsed.rest);
+		registry.set(parsed.first, {
+			name: parsed.first,
+			session,
+			mode: "run",
+			command: parsed.rest,
+			startedAt: new Date().toISOString(),
+		});
+		ctx.ui.notify(`Started: ${parsed.first}`, "info");
 	} catch (error) {
-		ctx.ui.notify(`Failed to start: ${errorMessage(error)}`, "error");
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
 	}
 }
 
-async function doCapture(args: string, ctx: ExtensionCommandContext) {
+async function cmdCapture(args: string, ctx: ExtensionCommandContext) {
 	const name = args.trim();
 	if (!name) {
 		ctx.ui.notify("Usage: /keep capture <name>", "error");
 		return;
 	}
 	try {
-		const result = await tmux("capture-pane", "-t", PREFIX + name, "-p");
-		const output = result.stdout.trimEnd();
-		ctx.ui.notify(output || `${name}: pane is empty`, "info");
+		const r = await tmux("capture-pane", "-t", PREFIX + name, "-p");
+		ctx.ui.notify(r.stdout.trimEnd() || `${name}: pane is empty`, "info");
 	} catch (error) {
-		ctx.ui.notify(`Failed to capture: ${errorMessage(error)}`, "error");
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
 	}
 }
 
-async function doSend(args: string, ctx: ExtensionCommandContext) {
+async function cmdSend(args: string, ctx: ExtensionCommandContext) {
 	const parsed = parseTwoArgs(args);
 	if (!parsed) {
 		ctx.ui.notify("Usage: /keep send <name> <text>", "error");
@@ -136,11 +320,11 @@ async function doSend(args: string, ctx: ExtensionCommandContext) {
 		await tmux("send-keys", "-t", PREFIX + parsed.first, parsed.rest, "Enter");
 		ctx.ui.notify(`Sent to ${parsed.first}`, "info");
 	} catch (error) {
-		ctx.ui.notify(`Failed to send: ${errorMessage(error)}`, "error");
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
 	}
 }
 
-async function doStop(args: string, ctx: ExtensionCommandContext) {
+async function cmdStop(args: string, ctx: ExtensionCommandContext) {
 	const name = args.trim();
 	if (!name) {
 		ctx.ui.notify("Usage: /keep stop <name>", "error");
@@ -151,11 +335,11 @@ async function doStop(args: string, ctx: ExtensionCommandContext) {
 		registry.delete(name);
 		ctx.ui.notify(`Stopped: ${name}`, "info");
 	} catch (error) {
-		ctx.ui.notify(`Failed to stop: ${errorMessage(error)}`, "error");
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
 	}
 }
 
-async function doList(ctx: ExtensionCommandContext) {
+async function cmdList(ctx: ExtensionCommandContext) {
 	if (registry.size === 0) {
 		ctx.ui.notify("No active keep sessions", "info");
 		return;
@@ -171,12 +355,6 @@ async function doList(ctx: ExtensionCommandContext) {
 	}
 	ctx.ui.notify(lines.join("\n"), "info");
 }
-
-async function tmux(...args: string[]) {
-	return exec("tmux", args);
-}
-
-
 
 function timeSince(iso: string): string {
 	const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);

@@ -2,10 +2,48 @@
 
 Shared Punt Labs pi extensions, skills, prompts, and themes.
 
-This repo is for small pi-native utilities that are useful across projects but
-not large enough to justify their own product repository. Larger tools with
-engines, design docs, independent release cycles, or substantial state should
-live in their own repos.
+This repo is for small pi-native utilities that are useful across
+projects but not large enough to justify their own product repository.
+
+## Extensions
+
+### keep
+
+Manage long-running tmux processes from inside pi. The agent can
+start, inspect, send input to, and stop tmux sessions that host
+CLI processes like PR check watchers, biff REPLs, dev servers, or
+any command that should outlive a single tool call.
+
+Tools registered for the LLM:
+
+- **keep_watch** — start a command that refreshes every N seconds
+- **keep_run** — start a long-running or interactive command
+- **keep_capture** — read current output from a kept session
+- **keep_send** — send a line of input to an interactive session
+- **keep_stop** — stop a kept session
+- **keep_list** — list all active kept sessions
+
+Each tool manages a named tmux session prefixed with `keep-`.
+
+Example agent usage:
+
+- start a PR check watcher, then capture it later to check status
+- start a biff REPL, send commands, capture replies
+- start a dev server, capture logs, stop when done
+
+The `/keep` slash command is also available for direct human use
+with the same subcommands.
+
+## Development
+
+This repo is Nix-first. See `docs/TESTING.md` for the testing
+pyramid.
+
+Required gate before committing:
+
+```text
+make check
+```
 
 ## Scope
 
@@ -15,25 +53,8 @@ Good fits for this repo:
 - thin CLI wrappers
 - shared prompt templates
 - reusable skills
-- lightweight status or tmux helpers
 
 Poor fits:
 
-- tools with a non-trivial engine
-- tools with a separate CLI/server product
+- tools with a non-trivial engine (use their own repo)
 - tools needing their own release process
-- project-specific extensions that only make sense in one repo
-
-## Initial plan
-
-The first likely extension is a small tmux helper for pi workflows. It should
-start, inspect, send input to, and stop tmux sessions that host long-running CLI
-processes.
-
-## Development
-
-This repo is Nix-first. The dev shell provides Node, npm, TypeScript tooling,
-Beads, GitHub CLI, markdown linting, and shell tooling.
-
-Nix is for development reproducibility. Published pi packages remain normal npm
-or git package resources.
