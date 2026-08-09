@@ -149,3 +149,7 @@ This repository is intended for Pi-native utilities with small implementations
 and no independent release lifecycle: extensions, thin CLI adapters, prompt
 templates, themes, and reusable skills. Larger tools with their own engines or
 release requirements should live in dedicated repositories.
+
+## License
+
+[MIT](LICENSE) © 2026 Punt Labs
