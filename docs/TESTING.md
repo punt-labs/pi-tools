@@ -45,14 +45,18 @@ All checked-in markdown must pass markdownlint, excluding
 ## Biff real-relay integration
 
 `biff-bridge.integration.test.ts` owns both sides of a real message
-exchange. It verifies:
+exchange. It verifies the complete Biff REPL surface:
 
-- extension startup creates and names a durable biff session
-- the bridge sends a message that a peer receives
-- a peer message triggers the automatic unread notification
-- `biff_read` returns the complete inbound message
-- extension shutdown removes its tmux session
-- test cleanup removes both endpoints even after a failed assertion
+- startup, status, `tty`, `who`, `finger`, `last`, plan set/clear,
+  `mesg n`/`mesg y`, timestamp on/off, and graceful `exit`
+- direct writes and reads in both directions, including automatic
+  unread notification and footer state
+- wall post, peer read, and clear
+- talk invite, accept, connected state, timestamped bidirectional
+  lines, local hangup, and remote hangup
+- the bridge as both talk inviter and accepter
+- restoration of ordinary command framing after modal talk
+- extension shutdown and unconditional cleanup of both owned endpoints
 
 Run separately because it requires local biff authentication and relay
 access:
