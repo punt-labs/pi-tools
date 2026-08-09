@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { parseTwoArgs, parseThreeArgs } from "../lib/parse.js";
 
 const exec = promisify(execFile);
 
@@ -175,23 +176,7 @@ async function tmux(...args: string[]) {
 	return exec("tmux", args);
 }
 
-export function parseTwoArgs(raw: string): { first: string; rest: string } | null {
-	const trimmed = raw.trim();
-	const idx = trimmed.indexOf(" ");
-	if (idx < 0) return null;
-	const first = trimmed.slice(0, idx);
-	const rest = trimmed.slice(idx + 1).trim();
-	if (!rest) return null;
-	return { first, rest };
-}
 
-export function parseThreeArgs(raw: string): { first: string; second: string; rest: string } | null {
-	const a = parseTwoArgs(raw);
-	if (!a) return null;
-	const b = parseTwoArgs(a.rest);
-	if (!b) return null;
-	return { first: a.first, second: b.first, rest: b.rest };
-}
 
 function timeSince(iso: string): string {
 	const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
