@@ -21,62 +21,79 @@ export async function sendAndWait(
 	timeoutMs = 10_000,
 	pollMs = 150,
 ): Promise<string> {
-	// Capture pane before sending to know where old output ends
 	const before = await capturePane(session);
-	const beforeLines = before.split("\n").length;
+	const priorOccurrences = commandLineIndexes(before, cmd, prompt).length;
 
 	await exec("tmux", ["send-keys", "-t", session, cmd, "Enter"]);
 
 	const deadline = Date.now() + timeoutMs;
-
 	while (Date.now() < deadline) {
 		await sleep(pollMs);
-		const pane = await capturePane(session);
-		const lines = pane.split("\n");
-
-		// Look for the command echo followed by output followed by a new prompt
-		let cmdLineIdx = -1;
-		for (let i = Math.max(0, beforeLines - 2); i < lines.length; i++) {
-			if (lines[i].includes(cmd)) {
-				cmdLineIdx = i;
-			}
-		}
-
-		if (cmdLineIdx < 0) continue;
-
-		// Check if a prompt appeared after the command
-		for (let i = cmdLineIdx + 1; i < lines.length; i++) {
-			if (prompt.test(lines[i])) {
-				// Output is between command echo and this prompt
-				return lines
-					.slice(cmdLineIdx + 1, i)
-					.join("\n")
-					.trim();
-			}
-		}
+		const output = completedCommandOutput(
+			await capturePane(session),
+			cmd,
+			prompt,
+			priorOccurrences,
+		);
+		if (output !== undefined) return output;
 	}
 
-	// Timeout — return whatever is in the pane after the command
 	const pane = await capturePane(session);
-	const lines = pane.split("\n");
-	let cmdLineIdx = -1;
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (lines[i].includes(cmd)) {
-			cmdLineIdx = i;
-			break;
+	const indexes = commandLineIndexes(pane, cmd, prompt);
+	if (indexes.length > priorOccurrences) {
+		const lastIndex = indexes.at(-1);
+		if (lastIndex !== undefined) {
+			return pane
+				.split("\n")
+				.slice(lastIndex + 1)
+				.join("\n")
+				.trim();
 		}
-	}
-	if (cmdLineIdx >= 0) {
-		return lines
-			.slice(cmdLineIdx + 1)
-			.join("\n")
-			.trim();
 	}
 	return pane.trim();
 }
 
+/** Return completed output for a newly echoed command, or undefined while running. */
+export function completedCommandOutput(
+	pane: string,
+	cmd: string,
+	prompt: RegExp,
+	priorOccurrences: number,
+): string | undefined {
+	const lines = pane.split("\n");
+	const indexes = commandLineIndexes(pane, cmd, prompt);
+	if (indexes.length <= priorOccurrences) return undefined;
+
+	const commandIndex = indexes.at(-1);
+	if (commandIndex === undefined) return undefined;
+	for (let i = commandIndex + 1; i < lines.length; i += 1) {
+		if (matches(prompt, lines[i])) {
+			return lines
+				.slice(commandIndex + 1, i)
+				.join("\n")
+				.trim();
+		}
+	}
+	return undefined;
+}
+
+function commandLineIndexes(pane: string, cmd: string, prompt: RegExp): number[] {
+	const indexes: number[] = [];
+	for (const [index, line] of pane.split("\n").entries()) {
+		if (!line.endsWith(cmd)) continue;
+		const prefix = line.slice(0, -cmd.length);
+		if (matches(prompt, prefix)) indexes.push(index);
+	}
+	return indexes;
+}
+
+function matches(pattern: RegExp, value: string): boolean {
+	pattern.lastIndex = 0;
+	return pattern.test(value);
+}
+
 async function capturePane(session: string): Promise<string> {
-	const r = await exec("tmux", ["capture-pane", "-t", session, "-p"]);
+	const r = await exec("tmux", ["capture-pane", "-t", session, "-p", "-S", "-", "-J"]);
 	return r.stdout;
 }
 
