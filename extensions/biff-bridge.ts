@@ -9,6 +9,7 @@ const KEEP_SESSION = `keep-biff-bridge-${String(process.pid)}`;
 const BIFF_TTY = `pi-${String(process.pid)}`;
 const BIFF_PROMPT = /▶\s*$/;
 const POLL_INTERVAL_MS = 15_000;
+const STARTUP_TIMEOUT_MS = 15_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let lastUnreadNotified = 0;
@@ -29,13 +30,13 @@ async function ensureBiffRepl(): Promise<string | null> {
 	try {
 		await tmux("new-session", "-d", "-s", KEEP_SESSION, "biff");
 		// wait for initial REPL startup and prompt
-		const deadline = Date.now() + 5000;
+		const deadline = Date.now() + STARTUP_TIMEOUT_MS;
 		while (Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			const r = await tmux("capture-pane", "-t", KEEP_SESSION, "-p");
 			if (BIFF_PROMPT.test(r.stdout)) return null;
 		}
-		return "biff REPL did not show prompt within 5s";
+		return "biff REPL did not show prompt within 15s";
 	} catch (error) {
 		return error instanceof Error ? error.message : String(error);
 	}
