@@ -1,68 +1,64 @@
 # Testing
 
-`pi-tools` tests extensions at multiple levels. Keep the lower layers
-fast and automated; keep pi-level tests small and explicit.
+`pi-tools` tests extensions at multiple levels. Every tier except
+the pi smoke test runs without external dependencies.
 
 ## Testing pyramid
 
-- TypeScript typecheck: all extensions compile cleanly. Automated.
-- TypeScript unit tests: command parsing, argument routing, registry
-  logic. Automated via vitest.
+- TS unit tests: registry, formatting, parsing logic in `lib/`.
+  Automated via vitest. No mocks, no external deps.
+- TS typecheck: all extensions and lib code compile cleanly.
+  Automated.
 - Markdown lint: all docs pass markdownlint. Automated.
-- Pi extension smoke: extensions load in a real pi session and
-  commands execute. Manual smoke in pi via tmux.
+- Pi RPC smoke: extension loads in a real pi session, agent calls
+  tools, results verified. Automated but requires pi binary and
+  model API key.
+
+## Unit tests
+
+Unit tests live in `tests/` and cover pure logic in `lib/`:
+
+- `registry.test.ts` — add, remove, has, list, duplicate rejection,
+  session name prefixing
+- `format.test.ts` — time formatting, entry formatting, list
+  formatting with fixed timestamps
+- `keep.test.ts` — argument parsing for two-arg and three-arg
+  patterns
+
+These tests have no external dependencies. They verify input/output
+behavior of extracted functions.
 
 ## TypeScript typecheck
 
-All extension source must compile without errors.
-
-Runs as part of the project gate.
-
-## TypeScript unit tests
-
-Unit tests cover parsing, routing, and state logic without requiring
-tmux, pi, or external services.
-
-For `keep`, tests should cover:
-
-- argument parsing for watch, run, capture, send, stop
-- subcommand dispatch
-- registry add/remove/list
-- error paths for missing arguments and duplicate names
-
-Run via vitest. Coverage reported but not gated for thin adapter
-code.
+All source under `extensions/`, `lib/`, and `tests/` must compile
+without errors.
 
 ## Markdown lint
 
 All checked-in markdown must pass markdownlint, excluding
 `node_modules` and `.direnv`.
 
-## Pi extension smoke
+## Pi RPC smoke test
 
-Smoke tests verify that extensions load in a real pi session and
-commands respond.
+Automated pass/fail test against a live pi process. Verifies the
+full tool surface from the agent's perspective:
 
-A valid smoke run for `keep` verifies:
+- pi starts with the keep extension loaded
+- agent is prompted to use keep tools
+- output is checked for tool call evidence
 
-- pi starts with `pi-tools` as a loaded package or local extension
-- the startup view lists the keep extension
-- `/keep help` prints usage
-- `/keep run` starts a tmux session
-- `/keep capture` returns pane output
-- `/keep stop` removes the session
-- `/keep list` reflects changes
+Run separately because it requires pi and a model API key:
 
-Use tmux for visible pi sessions so the pane can be inspected.
+- `make smoke-pi`
 
-## Required gate
+Not included in `make check`.
 
-Before committing:
+## Required gates
 
-- typecheck passes
-- unit tests pass
-- markdown lint passes
+Before committing code changes:
 
-Before changing pi extension behavior:
+- `make check`
 
-- perform the relevant smoke checks and record the result
+Before changing tool behavior:
+
+- `make smoke-pi` (when pi and credentials are available)
