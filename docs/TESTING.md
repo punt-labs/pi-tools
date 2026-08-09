@@ -1,7 +1,8 @@
 # Testing
 
-`pi-tools` tests extensions at multiple levels. Every tier except
-the pi smoke test runs without external dependencies.
+`pi-tools` tests extensions at multiple levels. The default `make check` gate
+is offline and deterministic. Real-relay and Pi smoke tests are explicit,
+external integration tiers.
 
 ## Testing pyramid
 
@@ -55,7 +56,7 @@ exchange. It verifies the complete Biff REPL surface:
 - startup, status, `tty`, `who`, `finger`, `last`, plan set/clear,
   `mesg n`/`mesg y`, timestamp on/off, and graceful `exit`
 - direct writes and reads in both directions, including automatic
-  unread notification and footer state
+  unread notification, footer state, and scheduled agent wake-up
 - wall post, peer read, and clear
 - talk invite, accept, connected state, timestamped bidirectional
   lines, local hangup, and remote hangup
@@ -85,6 +86,29 @@ Run separately because it requires pi and a model API key:
 - `make smoke-pi`
 
 Not included in `make check`.
+
+## Manual wake-up validation
+
+After changing scheduler integration, reload a Pi session that uses the local
+package and verify bounded recurring delivery:
+
+```text
+/every 5s Say exactly "scheduler test" and nothing else 2
+```
+
+Expected: two autonomous turns followed by `/every status` reporting no active
+schedule.
+
+Verify an output-driven wake by asking the agent to start this watch and stop
+it after the first update:
+
+```text
+keep_watch(name="wake-test", interval=5, command="date +%s", wake="always")
+```
+
+Finally, leave Pi idle and send its Biff identity a message from a separately
+owned Biff endpoint. Expected: an automatic inbox turn within the 15-second
+polling window, followed by an explicit `biff_read` call.
 
 ## Required gates
 
