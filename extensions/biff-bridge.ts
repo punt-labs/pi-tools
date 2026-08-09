@@ -292,7 +292,11 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { text?: string; clear?: boolean };
-			const command = params.clear ? "plan clear" : "plan " + (params.text ?? "");
+			const text = params.text?.trim();
+			if (!params.clear && !text) {
+				return result("Provide non-empty text or set clear=true.");
+			}
+			const command = params.clear ? "plan clear" : "plan " + (text ?? "");
 			try {
 				return result(await biffCommand(command));
 			} catch (error) {
@@ -349,7 +353,11 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { user?: string; count?: number };
-			const count = params.count === undefined ? "" : " --count " + String(params.count);
+			const normalizedCount =
+				params.count === undefined
+					? undefined
+					: Math.min(100, Math.max(1, Math.trunc(params.count)));
+			const count = normalizedCount === undefined ? "" : " --count " + String(normalizedCount);
 			const user = params.user ? " " + params.user : "";
 			try {
 				return result(await biffCommand("last" + count + user));
@@ -381,7 +389,9 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			let command = "wall";
 			if (params.action === "clear") command = "wall clear";
 			if (params.action === "post") {
-				command = "wall " + (params.message ?? "");
+				const message = params.message?.trim();
+				if (!message) return result("A non-empty message is required to post the wall.");
+				command = "wall " + message;
 				if (params.duration) command += " " + params.duration;
 			}
 			try {
@@ -502,6 +512,8 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			try {
 				const output = await readTalkDelta(timeout);
 				if (output.includes(" ended.") || output.includes(" cancelled.")) {
+					talkMode = "idle";
+					talkSnapshot = "";
 					await restartOwnedRepl();
 				}
 				return result(output);
