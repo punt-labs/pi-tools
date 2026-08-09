@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { capturePane, sendAndWait } from "../lib/tmux-wait.js";
+import { wakeScheduler } from "../lib/wake-scheduler.js";
 
 const exec = promisify(execFile);
 
@@ -177,7 +178,9 @@ async function sendTalkLine(message: string): Promise<string> {
 }
 
 export default function biffBridgeExtension(pi: ExtensionAPI) {
+	pi.on("agent_settled", () => wakeScheduler.flush());
 	pi.on("session_start", async (_event, ctx) => {
+		wakeScheduler.configure(pi, ctx);
 		const err = await ensureBiffRepl();
 		if (err) {
 			ctx.ui.notify("biff-bridge: could not start biff REPL: " + err, "warning");
@@ -195,6 +198,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		wakeScheduler.shutdown();
 		talkMode = "idle";
 		talkSnapshot = "";
 		if (pollTimer) {
@@ -565,6 +569,12 @@ async function pollUnread(ctx: {
 			ctx.ui.setStatus("biff", "biff: " + String(count) + " unread");
 			if (count > lastUnreadNotified) {
 				ctx.ui.notify("biff: " + String(count) + " unread message(s)", "info");
+				wakeScheduler.enqueue("biff:inbox", {
+					source: "Biff inbox update",
+					content:
+						`You have ${String(count)} unread Biff message(s). ` +
+						"Call biff_read to retrieve them and continue the conversation or task.",
+				});
 			}
 		} else {
 			ctx.ui.setStatus("biff", "biff: connected");
