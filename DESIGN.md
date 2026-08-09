@@ -46,13 +46,20 @@ disable resources through `pi config`.
 ### ADR-002 Context
 
 Pi tool calls are finite, but agents need development servers, command
-watchers, REPLs, and other processes to remain available across turns.
+watchers, REPLs, and other processes to remain available across turns. The
+initial deployment environment is a trusted, single-user workstation where Pi,
+tmux, and kept commands all run as the same Unix account.
 
 ### ADR-002 Decision
 
 Use tmux as the local process host. Prefix managed sessions with `keep-`, keep
 an in-memory registry for metadata, and expose start, capture, send, stop, and
 list operations as native Pi tools.
+
+Treat tmux strictly as a persistence and terminal-control mechanism. It is not
+a sandbox, authorization system, tenant boundary, secret store, or resource
+manager. Its only default access boundary is the owning Unix account and the
+permissions on its local socket.
 
 ### ADR-002 Consequences
 
@@ -62,6 +69,49 @@ list operations as native Pi tools.
 - Kept processes can outlive a Pi session, while automatic wake timers cannot.
 - Registry metadata is process-local and is not a durable inventory across Pi
   process restarts.
+- Kept commands have the same filesystem, credential, environment, and network
+  authority as Pi and the current Unix user.
+- Root and any process running as the same user can inspect, control, or kill a
+  kept session.
+- Secrets printed in a pane can remain available through tmux capture.
+- Captured output delivered to an LLM is untrusted input and can contain prompt
+  injection.
+- The `keep-` prefix is a collision-avoidance convention, not proof of
+  ownership.
+
+### ADR-002 Required hardening
+
+Before treating the implementation as complete, `keep` must:
+
+- restrict names to a small, documented safe character set and length
+- require a registry-owned entry before capture, send, stop, or delayed wake
+- continue sending interactive text with literal tmux input
+- truncate model-bound output and identify it as untrusted command output
+- cancel timers and pending events before terminating a session
+- avoid claiming that tmux provides process or privilege isolation
+
+A dedicated tmux socket namespace may reduce accidental interaction with a
+user's ordinary tmux sessions. It does not protect against the same Unix user
+and therefore does not change the security boundary.
+
+### ADR-002 Revisit triggers
+
+Revisit this decision and introduce a container, sandbox, dedicated OS user,
+virtual machine, remote execution boundary, or stronger process manager when
+any of these become true:
+
+- kept commands or their dependencies are not trusted
+- the extension runs on a multi-user host, shared runner, or hosted service
+- different users, repositories, or agents require tenant isolation
+- commands must not inherit Pi's credentials, SSH agent, files, or network
+- captured output can contain adversarial content that must not reach the model
+- secrets must be protected from pane capture or same-user processes
+- CPU, memory, process count, runtime, or network access must be enforced
+- schedules or process inventories must survive Pi or machine restarts
+- auditability requires durable ownership and lifecycle records
+
+The ADR remains accepted only while the trusted, single-user workstation threat
+model holds.
 
 ### ADR-002 Alternatives considered
 
@@ -69,6 +119,11 @@ list operations as native Pi tools.
   be terminated with the call or lose interactive input.
 - **Files plus background shell jobs:** rejected because ownership, capture,
   and interactive control are weaker.
+- **Dedicated tmux socket:** useful for namespace hygiene but rejected as a
+  security boundary because same-user authority is unchanged.
+- **Container or virtual machine by default:** deferred because current commands
+  are trusted and the operational cost is not yet justified. This becomes the
+  preferred direction when a revisit trigger is met.
 
 ## ADR-003: Bridge Biff through one durable REPL
 
