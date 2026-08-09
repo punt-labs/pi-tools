@@ -5,13 +5,15 @@ import { sendAndWait } from "../lib/tmux-wait.js";
 
 const exec = promisify(execFile);
 
-const KEEP_SESSION = "keep-biff-bridge";
+const KEEP_SESSION = `keep-biff-bridge-${String(process.pid)}`;
+const BIFF_TTY = `pi-${String(process.pid)}`;
 const BIFF_PROMPT = /▶\s*$/;
 const POLL_INTERVAL_MS = 15_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let lastUnreadNotified = 0;
-let commandInFlight = false;
+let queuedCommands = 0;
+let commandTail: Promise<void> = Promise.resolve();
 
 async function tmux(...args: string[]) {
 	return exec("tmux", args);
@@ -39,15 +41,24 @@ async function ensureBiffRepl(): Promise<string | null> {
 	}
 }
 
+function enqueueCommand<T>(operation: () => Promise<T>): Promise<T> {
+	queuedCommands += 1;
+	const run = commandTail.then(operation, operation);
+	commandTail = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	return run.finally(() => {
+		queuedCommands -= 1;
+	});
+}
+
 async function biffCommand(cmd: string): Promise<string> {
-	const err = await ensureBiffRepl();
-	if (err) return "biff REPL not running: " + err;
-	commandInFlight = true;
-	try {
-		return await sendAndWait(KEEP_SESSION, cmd, BIFF_PROMPT);
-	} finally {
-		commandInFlight = false;
-	}
+	return enqueueCommand(async () => {
+		const err = await ensureBiffRepl();
+		if (err) return "biff REPL not running: " + err;
+		return sendAndWait(KEEP_SESSION, cmd, BIFF_PROMPT);
+	});
 }
 
 function result(text: string) {
@@ -67,8 +78,8 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		// Set a TTY name for this session
-		await sendAndWait(KEEP_SESSION, "tty pi-bridge", BIFF_PROMPT);
+		// Each Pi process owns a distinct biff identity and tmux session.
+		await biffCommand("tty " + BIFF_TTY);
 
 		ctx.ui.setStatus("biff", "biff: connected");
 
@@ -77,10 +88,15 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		}, POLL_INTERVAL_MS);
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async () => {
 		if (pollTimer) {
 			clearInterval(pollTimer);
 			pollTimer = undefined;
+		}
+		try {
+			await tmux("kill-session", "-t", KEEP_SESSION);
+		} catch {
+			// The REPL may already have exited.
 		}
 	});
 
@@ -189,7 +205,7 @@ async function pollUnread(ctx: {
 		notify(msg: string, type: "info" | "warning" | "error"): void;
 	};
 }) {
-	if (commandInFlight) return;
+	if (queuedCommands > 0) return;
 	try {
 		const output = await biffCommand("status");
 		const match = /unread:\s*(\d+)/.exec(output);
