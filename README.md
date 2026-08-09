@@ -1,97 +1,151 @@
 # pi-tools
 
-Shared Punt Labs pi extensions, skills, prompts, and themes.
+Small, reusable extensions for the
+[Pi coding agent](https://github.com/earendil-works/pi/tree/main/packages/coding-agent).
+The package currently provides tools for managing long-running terminal
+processes and connecting Pi sessions to
+[Biff](https://github.com/punt-labs/biff).
 
-This repo is for small pi-native utilities that are useful across
-projects but not large enough to justify their own product repository.
+> [!IMPORTANT]
+> This project is in early development. It is installed from source, and its
+> tool APIs may change before the first tagged release. Pin a Git commit when
+> reproducibility matters.
+
+## Requirements
+
+- macOS or Linux
+- [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
+- [tmux](https://github.com/tmux/tmux/wiki)
+- [Biff](https://github.com/punt-labs/biff) only when using the Biff bridge
+
+Pi extensions execute with the same system access as Pi itself. Review an
+extension before installing it, especially when Pi can run commands without
+confirmation.
+
+## Install
+
+Install the package for the current user:
+
+```bash
+pi install git:github.com/punt-labs/pi-tools
+```
+
+Try it for one Pi run without changing settings:
+
+```bash
+pi -e git:github.com/punt-labs/pi-tools
+```
+
+Pin an installation to a tag or commit by adding `@<ref>`:
+
+```bash
+pi install git:github.com/punt-labs/pi-tools@<commit-sha>
+```
+
+The package loads both extensions by default. Use `pi config` to disable an
+extension you do not need. If the Biff bridge is enabled without an installed
+and authenticated `biff` command, Pi displays a startup warning; the `keep`
+extension remains usable.
+
+Update or remove the package with Pi's package manager:
+
+```bash
+pi update --extensions
+pi remove git:github.com/punt-labs/pi-tools
+```
 
 ## Extensions
 
-### keep
+### `keep`
 
-Manage long-running tmux processes from inside pi. The agent can
-start, inspect, send input to, and stop tmux sessions that host
-CLI processes like PR check watchers, biff REPLs, dev servers, or
-any command that should outlive a single tool call.
+Manage long-running or interactive processes in tmux without leaving Pi. The
+extension owns sessions with a `keep-` prefix and exposes their current output
+to the agent.
 
-Tools registered for the LLM:
+| Tool | Purpose |
+| --- | --- |
+| `keep_watch` | Start a command that refreshes at a fixed interval |
+| `keep_run` | Start a long-running or interactive command |
+| `keep_capture` | Read the current output from a kept session |
+| `keep_send` | Send one line to an interactive session |
+| `keep_stop` | Stop a kept session |
+| `keep_list` | List active kept sessions |
 
-- **keep_watch** — start a command that refreshes every N seconds
-- **keep_run** — start a long-running or interactive command
-- **keep_capture** — read current output from a kept session
-- **keep_send** — send a line of input to an interactive session
-- **keep_stop** — stop a kept session
-- **keep_list** — list all active kept sessions
+The `/keep` command provides the same operations for direct human use.
 
-Each tool manages a named tmux session prefixed with `keep-`.
+Example uses include watching pull-request checks, running a development
+server, or keeping an interactive CLI available across agent turns. Watch
+sessions return the latest refreshed snapshot rather than their entire output
+history.
 
-Example agent usage:
+### `biff-bridge`
 
-- start a PR check watcher, then capture it later to check status
-- start a biff REPL, send commands, capture replies
-- start a dev server, capture logs, stop when done
+Connect Pi to Biff through a process-owned, durable Biff REPL. Every Pi process
+uses a distinct tmux session and Biff TTY, preventing concurrent Pi sessions
+from consuming one another's messages. The extension polls for unread mail,
+raises Pi notifications, and displays connection or unread state in the
+footer.
 
-Common watch patterns:
+Install and authenticate Biff before enabling this extension. See the
+[Biff installation instructions](https://github.com/punt-labs/biff#quick-start).
 
-- `gh -R owner/repo pr checks <number>` — PR CI status
-- `bd ready` — Beads ready work
-- `ls -lah <dir>` — directory changes
-- `curl -s <health-url>` — service health
-- `tail -n 40 <logfile>` — log tail
+| Tools | Purpose |
+| --- | --- |
+| `biff_who`, `biff_finger` | Inspect current presence |
+| `biff_last` | Inspect session history |
+| `biff_status`, `biff_plan` | Inspect and publish bridge state |
+| `biff_tty`, `biff_mesg` | Control the bridge session |
+| `biff_read`, `biff_write` | Receive and send direct messages |
+| `biff_wall` | Read, post, or clear the team wall |
+| `biff_timestamps` | Control talk message timestamps |
+| `biff_talk_start` | Initiate or accept a talk |
+| `biff_talk_read` | Read new talk activity |
+| `biff_talk_send` | Send a talk line |
+| `biff_talk_end` | Cancel or end a talk |
 
-Capture returns the latest refreshed snapshot, not history.
-For watch sessions, the watch header line is stripped
-automatically so the agent sees clean command output.
+The four talk tools adapt Biff's modal BSD-style `talk` interface to discrete
+Pi tool calls. The bridge can initiate or accept an invitation, exchange lines,
+and detect local cancellation or either participant hanging up.
 
-The `/keep` slash command is also available for direct human use
-with the same subcommands.
-
-### biff bridge
-
-Connect Pi to Biff through a process-owned, durable REPL. Each Pi
-process gets a distinct tmux session and Biff TTY, so concurrent Pi
-sessions cannot consume one another's messages. The extension polls
-for unread messages, raises Pi notifications, and displays connection
-or unread state in the footer.
-
-Tools registered for the LLM:
-
-- **biff_who**, **biff_finger**, and **biff_last** — inspect presence
-  and session history
-- **biff_status**, **biff_plan**, **biff_tty**, and **biff_mesg** —
-  inspect and manage the bridge session
-- **biff_read** and **biff_write** — receive and send direct messages
-- **biff_wall** — read, post, or clear the team wall
-- **biff_timestamps** — control timestamps on talk messages
-- **biff_talk_start**, **biff_talk_read**, **biff_talk_send**, and
-  **biff_talk_end** — manage a modal BSD-style talk conversation
-
-Talk tools support either side of the invite/accept handshake. Ending
-or remotely ending a talk recreates the owned REPL after notifying the
-peer because Biff does not redraw its ordinary prompt after leaving
-talk mode.
+Unread notification currently uses a 15-second polling interval. It updates
+Pi's UI but does not autonomously start an agent turn.
 
 ## Development
 
-This repo is Nix-first. See `docs/TESTING.md` for the testing
-pyramid.
+Clone the repository and install its Node development dependencies:
 
-Required gate before committing:
-
-```text
+```bash
+git clone https://github.com/punt-labs/pi-tools.git
+cd pi-tools
+npm install
 make check
 ```
 
-## Scope
+The repository includes a Nix development shell for macOS and Linux:
 
-Good fits for this repo:
+```bash
+nix develop
+npm install
+make check
+```
 
-- small pi extensions
-- thin CLI wrappers
-- shared prompt templates
-- reusable skills
+`make check` runs TypeScript type checking, ESLint, Prettier verification,
+offline unit tests, and Markdown linting.
 
-Poor fits:
+Real-relay tests own both Biff endpoints but require tmux, an authenticated Biff
+installation, and network access:
 
-- tools with a non-trivial engine (use their own repo)
-- tools needing their own release process
+```bash
+make test-integration
+```
+
+The relay suite is intentionally excluded from `make check` so the default gate
+remains deterministic and offline. See [`docs/TESTING.md`](docs/TESTING.md) for
+the full test strategy.
+
+## Repository scope
+
+This repository is intended for Pi-native utilities with small implementations
+and no independent release lifecycle: extensions, thin CLI adapters, prompt
+templates, themes, and reusable skills. Larger tools with their own engines or
+release requirements should live in dedicated repositories.
