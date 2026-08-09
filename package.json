@@ -8,8 +8,10 @@
   ],
   "type": "module",
   "scripts": {
-    "check": "npm run typecheck && npm run lint:md",
+    "check": "npm run typecheck && npm run test && npm run lint:md",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.direnv\""
   },
   "pi": {
@@ -26,11 +28,12 @@
       "themes"
     ]
   },
-  "dependencies": {},
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "latest",
     "@types/node": "latest",
+    "@vitest/coverage-v8": "^4.1.10",
     "markdownlint-cli2": "latest",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vitest": "^4.1.10"
   }
 }
