@@ -28,6 +28,11 @@ Unit tests live in `tests/` and cover pure logic in `lib/`:
 - `keep.test.ts` — argument parsing for two-arg and three-arg
   patterns
 - `tmux-wait.test.ts` — exact command framing and prompt completion
+- `wake-scheduler.test.ts` — one-shot delivery, busy-event coalescing,
+  cancellation, in-flight cancellation, and shutdown
+- `keep-watch.test.ts` — first, changed, always, and never wake policies
+- `every.test.ts` — bounded `/every` parsing for seconds, minutes, hours,
+  arbitrary instructions, and invalid syntax
 
 These tests have no external dependencies. They verify input/output
 behavior of extracted functions.

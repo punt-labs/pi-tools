@@ -26,6 +26,7 @@ class RelayFixture {
 	readonly tools = new Map<string, RegisteredTool>();
 	readonly statuses: string[] = [];
 	readonly notifications: string[] = [];
+	readonly wakes: string[] = [];
 	readonly peerSession: string;
 	readonly peerTty: string;
 	readonly peerAddress: string;
@@ -61,8 +62,14 @@ class RelayFixture {
 			registerTool(tool: RegisteredTool) {
 				fixture.tools.set(tool.name, tool);
 			},
+			sendMessage(message: { content: string }) {
+				fixture.wakes.push(message.content);
+			},
 		} as unknown as ExtensionAPI;
 		const context = {
+			isIdle() {
+				return true;
+			},
 			ui: {
 				setStatus(_id: string, text: string | undefined) {
 					if (text !== undefined) fixture.statuses.push(text);
@@ -193,6 +200,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 			20_000,
 		);
 		expect(fixture.statuses.some((status) => /biff: \d+ unread/.test(status))).toBe(true);
+		expect(fixture.wakes.some((wake) => wake.includes("Biff inbox update"))).toBe(true);
 		expect(await fixture.tool("biff_read")).toContain(inbound);
 	}, 40_000);
 

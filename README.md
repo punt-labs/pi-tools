@@ -64,8 +64,9 @@ to the agent.
 
 | Tool | Purpose |
 | --- | --- |
-| `keep_watch` | Start a command that refreshes at a fixed interval |
+| `keep_watch` | Refresh a command and optionally wake the agent with output |
 | `keep_run` | Start a long-running or interactive command |
+| `keep_after` | Capture a kept session after a delay and wake the agent |
 | `keep_capture` | Read the current output from a kept session |
 | `keep_send` | Send one line to an interactive session |
 | `keep_stop` | Stop a kept session |
@@ -76,7 +77,27 @@ The `/keep` command provides the same operations for direct human use.
 Example uses include watching pull-request checks, running a development
 server, or keeping an interactive CLI available across agent turns. Watch
 sessions return the latest refreshed snapshot rather than their entire output
-history.
+history. `keep_watch` supports `change` (the default), `always`, and `never`
+wake policies. A wake injects the current pane and triggers another agent turn;
+busy turns coalesce to the newest update.
+
+### `/every`
+
+Schedule a bounded repeating LLM instruction:
+
+```text
+/every <n>s|<n>m|<n>h <LLM command> <max_times>
+```
+
+For example:
+
+```text
+/every 120s vox say "What's up?" 5
+```
+
+Use `/every status` to inspect the active schedule and `/every stop` to cancel
+it. Timer ticks that occur while the agent is busy coalesce into one pending
+delivery, and all schedules are cancelled when the Pi session shuts down.
 
 ### `biff-bridge`
 
@@ -107,8 +128,9 @@ The four talk tools adapt Biff's modal BSD-style `talk` interface to discrete
 Pi tool calls. The bridge can initiate or accept an invitation, exchange lines,
 and detect local cancellation or either participant hanging up.
 
-Unread notification currently uses a 15-second polling interval. It updates
-Pi's UI but does not autonomously start an agent turn.
+Unread notification uses a 15-second polling interval. A newly increased unread
+count updates Pi's UI and triggers an agent turn; the agent then calls
+`biff_read` explicitly so polling never consumes inbox messages.
 
 ## Development
 
