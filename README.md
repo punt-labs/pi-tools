@@ -31,6 +31,18 @@ Example agent usage:
 - start a biff REPL, send commands, capture replies
 - start a dev server, capture logs, stop when done
 
+Common watch patterns:
+
+- `gh -R owner/repo pr checks <number>` — PR CI status
+- `bd ready` — Beads ready work
+- `ls -lah <dir>` — directory changes
+- `curl -s <health-url>` — service health
+- `tail -n 40 <logfile>` — log tail
+
+Capture returns the latest refreshed snapshot, not history.
+For watch sessions, the watch header line is stripped
+automatically so the agent sees clean command output.
+
 The `/keep` slash command is also available for direct human use
 with the same subcommands.
 

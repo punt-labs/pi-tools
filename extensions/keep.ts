@@ -26,6 +26,7 @@ export default function keepExtension(pi: ExtensionAPI) {
 		label: "Keep Watch",
 		description:
 			"Start a command in a tmux session that refreshes every N seconds. " +
+			"The session always holds the latest output; use keep_capture to read it. " +
 			"Use for PR check monitoring, periodic status checks, or any repeating command.",
 		parameters: {
 			type: "object",
@@ -105,8 +106,9 @@ export default function keepExtension(pi: ExtensionAPI) {
 		name: "keep_capture",
 		label: "Keep Capture",
 		description:
-			"Capture current visible output from a kept tmux session. " +
-			"Returns the pane contents without attaching.",
+			"Capture the latest visible output from a kept tmux session. " +
+			"Returns a snapshot of the current pane, not history. " +
+			"For watch sessions, the watch header is stripped automatically.",
 		parameters: {
 			type: "object",
 			properties: {
