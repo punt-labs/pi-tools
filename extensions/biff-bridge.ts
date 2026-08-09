@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { sendAndWait } from "../lib/tmux-wait.js";
 
 const exec = promisify(execFile);
 
-const KEEP_NAME = "biff-bridge";
-const KEEP_SESSION = "keep-" + KEEP_NAME;
+const KEEP_SESSION = "keep-biff-bridge";
+const BIFF_PROMPT = /▶\s*$/;
 const POLL_INTERVAL_MS = 15_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -24,9 +25,14 @@ async function ensureBiffRepl(): Promise<string | null> {
 	}
 	try {
 		await tmux("new-session", "-d", "-s", KEEP_SESSION, "biff");
-		// wait for REPL to initialize
-		await new Promise((resolve) => setTimeout(resolve, 2000));
-		return null;
+		// wait for initial REPL startup and prompt
+		const deadline = Date.now() + 5000;
+		while (Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			const r = await tmux("capture-pane", "-t", KEEP_SESSION, "-p");
+			if (BIFF_PROMPT.test(r.stdout)) return null;
+		}
+		return "biff REPL did not show prompt within 5s";
 	} catch (error) {
 		return error instanceof Error ? error.message : String(error);
 	}
@@ -35,37 +41,7 @@ async function ensureBiffRepl(): Promise<string | null> {
 async function biffCommand(cmd: string): Promise<string> {
 	const err = await ensureBiffRepl();
 	if (err) return "biff REPL not running: " + err;
-
-	await tmux("send-keys", "-t", KEEP_SESSION, cmd, "Enter");
-	// wait for command output
-	await new Promise((resolve) => setTimeout(resolve, 1500));
-
-	const r = await tmux("capture-pane", "-t", KEEP_SESSION, "-p");
-	return r.stdout.trimEnd();
-}
-
-function extractLatestOutput(pane: string, cmd: string): string {
-	// Find the last occurrence of the prompt followed by the command,
-	// then take everything between that and the next prompt.
-	const lines = pane.split("\n");
-	let startIdx = -1;
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (lines[i].includes("▶") && lines[i].includes(cmd)) {
-			startIdx = i + 1;
-			break;
-		}
-	}
-	if (startIdx < 0) return pane;
-
-	let endIdx = lines.length;
-	for (let i = startIdx; i < lines.length; i++) {
-		if (lines[i].includes("▶") && !lines[i].includes(cmd)) {
-			endIdx = i;
-			break;
-		}
-	}
-
-	return lines.slice(startIdx, endIdx).join("\n").trim();
+	return sendAndWait(KEEP_SESSION, cmd, BIFF_PROMPT);
 }
 
 function result(text: string) {
@@ -86,12 +62,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		}
 
 		// Set a TTY name for this session
-		await tmux("send-keys", "-t", KEEP_SESSION, "tty pi-bridge", "Enter");
-		await new Promise((resolve) => setTimeout(resolve, 500));
+		await sendAndWait(KEEP_SESSION, "tty pi-bridge", BIFF_PROMPT);
 
 		ctx.ui.setStatus("biff", "biff: connected");
 
-		// Start unread poller
 		pollTimer = setInterval(() => {
 			void pollUnread(ctx);
 		}, POLL_INTERVAL_MS);
@@ -102,8 +76,6 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			clearInterval(pollTimer);
 			pollTimer = undefined;
 		}
-		// Leave the biff REPL running — it may be shared or
-		// the user may want it to persist across sessions.
 	});
 
 	pi.registerTool({
@@ -115,8 +87,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		parameters: { type: "object", properties: {} },
 		async execute() {
 			try {
-				const pane = await biffCommand("who");
-				return result(extractLatestOutput(pane, "who"));
+				return result(await biffCommand("who"));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -132,8 +103,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		parameters: { type: "object", properties: {} },
 		async execute() {
 			try {
-				const pane = await biffCommand("read");
-				return result(extractLatestOutput(pane, "read"));
+				return result(await biffCommand("read"));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -157,8 +127,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { to: string; message: string };
 			try {
-				const pane = await biffCommand("write " + params.to + " " + params.message);
-				return result(extractLatestOutput(pane, "write"));
+				return result(await biffCommand("write " + params.to + " " + params.message));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -179,8 +148,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { text: string };
 			try {
-				const pane = await biffCommand("plan " + params.text);
-				return result(extractLatestOutput(pane, "plan"));
+				return result(await biffCommand("plan " + params.text));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -201,8 +169,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { user: string };
 			try {
-				const pane = await biffCommand("finger " + params.user);
-				return result(extractLatestOutput(pane, "finger"));
+				return result(await biffCommand("finger " + params.user));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -217,8 +184,7 @@ async function pollUnread(ctx: {
 	};
 }) {
 	try {
-		const pane = await biffCommand("status");
-		const output = extractLatestOutput(pane, "status");
+		const output = await biffCommand("status");
 		const match = /unread:\s*(\d+)/.exec(output);
 		const count = match ? parseInt(match[1], 10) : 0;
 
@@ -232,6 +198,6 @@ async function pollUnread(ctx: {
 		}
 		lastUnreadNotified = count;
 	} catch {
-		// polling failure is silent — do not spam notifications
+		// polling failure is silent
 	}
 }
