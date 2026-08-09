@@ -1,39 +1,43 @@
 {
-  "name": "@punt-labs/pi-tools",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Shared Punt Labs pi extensions, skills, prompts, and themes.",
-  "keywords": [
-    "pi-package"
-  ],
-  "type": "module",
-  "scripts": {
-    "check": "npm run typecheck && npm run test && npm run lint:md",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "coverage": "vitest run --coverage",
-    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.direnv\""
-  },
-  "pi": {
-    "extensions": [
-      "extensions"
-    ],
-    "skills": [
-      "skills"
-    ],
-    "prompts": [
-      "prompts"
-    ],
-    "themes": [
-      "themes"
-    ]
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "latest",
-    "@types/node": "latest",
-    "@vitest/coverage-v8": "^4.1.10",
-    "markdownlint-cli2": "latest",
-    "typescript": "latest",
-    "vitest": "^4.1.10"
-  }
+	"name": "@punt-labs/pi-tools",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Shared Punt Labs pi extensions, skills, prompts, and themes.",
+	"keywords": [
+		"pi-package"
+	],
+	"type": "module",
+	"scripts": {
+		"check": "npm run typecheck && npm run lint && npm run format:check && npm run test",
+		"typecheck": "tsc --noEmit",
+		"lint": "eslint .",
+		"format:check": "prettier --check .",
+		"test": "vitest run",
+		"coverage": "vitest run --coverage"
+	},
+	"pi": {
+		"extensions": [
+			"extensions"
+		],
+		"skills": [
+			"skills"
+		],
+		"prompts": [
+			"prompts"
+		],
+		"themes": [
+			"themes"
+		]
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "latest",
+		"@types/node": "latest",
+		"@vitest/coverage-v8": "^4.1.10",
+		"eslint": "^10.8.1",
+		"markdownlint-cli2": "latest",
+		"prettier": "^3.9.6",
+		"typescript": "latest",
+		"typescript-eslint": "^8.66.0",
+		"vitest": "^4.1.10"
+	}
 }

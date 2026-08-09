@@ -1,20 +1,27 @@
 NPM ?= npm
 MARKDOWNLINT ?= markdownlint-cli2
 
-.PHONY: help check lint typecheck test docs check-docs format clean coverage tools smoke-pi
+.PHONY: help check lint typecheck test docs check-docs format format-check clean coverage tools smoke-pi
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-24s %s\n", $$1, $$2}'
 
-check: typecheck test check-docs ## Run all quality gates
+check: typecheck lint format-check test check-docs ## Run all quality gates
 
-typecheck: ## Type-check TypeScript extensions
+typecheck: ## Type-check TypeScript
 	$(NPM) exec tsc -- --noEmit
+
+lint: ## Lint TypeScript with eslint
+	$(NPM) exec eslint -- .
+
+format-check: ## Check formatting with prettier
+	$(NPM) exec prettier -- --check .
+
+format: ## Auto-format with prettier
+	$(NPM) exec prettier -- --write .
 
 test: ## Run unit tests
 	$(NPM) exec vitest -- run
-
-lint: typecheck check-docs ## Lint (typecheck + markdown)
 
 docs: check-docs ## Lint markdown
 
@@ -26,9 +33,6 @@ smoke-pi: ## Run pi RPC smoke test (requires pi + model API key)
 
 coverage: ## Run tests with coverage
 	$(NPM) exec vitest -- run --coverage
-
-format: ## Check formatting (placeholder)
-	@echo "No formatter configured yet"
 
 tools: ## Install development dependencies
 	$(NPM) install

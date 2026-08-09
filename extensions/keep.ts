@@ -49,8 +49,16 @@ export default function keepExtension(pi: ExtensionAPI) {
 			});
 			if (err) return result(err);
 			try {
-				await tmux("new-session", "-d", "-s", session, `watch -n ${params.interval} ${params.command}`);
-				return result(`Started watch: ${params.name} (every ${params.interval}s)`);
+				await tmux(
+					"new-session",
+					"-d",
+					"-s",
+					session,
+					"watch -n " + String(params.interval) + " " + params.command,
+				);
+				return result(
+					"Started watch: " + params.name + " (every " + String(params.interval) + "s)",
+				);
 			} catch (error) {
 				registry.remove(params.name);
 				return result(`Failed to start: ${errorMessage(error)}`);
@@ -171,8 +179,8 @@ export default function keepExtension(pi: ExtensionAPI) {
 		label: "Keep List",
 		description: "List all active kept tmux sessions with their mode, age, and command.",
 		parameters: { type: "object", properties: {} },
-		async execute() {
-			return result(formatList(registry.list()));
+		execute() {
+			return Promise.resolve(result(formatList(registry.list())));
 		},
 	});
 
@@ -196,7 +204,8 @@ export default function keepExtension(pi: ExtensionAPI) {
 				case "stop":
 					return cmdStop(rest, ctx);
 				case "list":
-					return cmdList(ctx);
+					cmdList(ctx);
+					return;
 				case "":
 				case "help":
 					ctx.ui.notify(
@@ -219,58 +228,113 @@ export default function keepExtension(pi: ExtensionAPI) {
 
 async function cmdWatch(args: string, ctx: ExtensionCommandContext) {
 	const parsed = parseThreeArgs(args);
-	if (!parsed) { ctx.ui.notify("Usage: /keep watch <name> <seconds> <command>", "error"); return; }
+	if (!parsed) {
+		ctx.ui.notify("Usage: /keep watch <name> <seconds> <command>", "error");
+		return;
+	}
 	const interval = parseInt(parsed.second, 10);
-	if (isNaN(interval) || interval <= 0) { ctx.ui.notify("Interval must be a positive number", "error"); return; }
+	if (isNaN(interval) || interval <= 0) {
+		ctx.ui.notify("Interval must be a positive number", "error");
+		return;
+	}
 	const session = registry.sessionName(parsed.first);
-	const err = registry.add({ name: parsed.first, session, mode: "watch", command: parsed.rest, interval, startedAt: new Date().toISOString() });
-	if (err) { ctx.ui.notify(err, "error"); return; }
+	const err = registry.add({
+		name: parsed.first,
+		session,
+		mode: "watch",
+		command: parsed.rest,
+		interval,
+		startedAt: new Date().toISOString(),
+	});
+	if (err) {
+		ctx.ui.notify(err, "error");
+		return;
+	}
 	try {
-		await tmux("new-session", "-d", "-s", session, `watch -n ${interval} ${parsed.rest}`);
-		ctx.ui.notify(`Started watch: ${parsed.first} (every ${interval}s)`, "info");
-	} catch (error) { registry.remove(parsed.first); ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error"); }
+		await tmux(
+			"new-session",
+			"-d",
+			"-s",
+			session,
+			"watch -n " + String(interval) + " " + parsed.rest,
+		);
+		ctx.ui.notify("Started watch: " + parsed.first + " (every " + String(interval) + "s)", "info");
+	} catch (error) {
+		registry.remove(parsed.first);
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
+	}
 }
 
 async function cmdRun(args: string, ctx: ExtensionCommandContext) {
 	const parsed = parseTwoArgs(args);
-	if (!parsed) { ctx.ui.notify("Usage: /keep run <name> <command>", "error"); return; }
+	if (!parsed) {
+		ctx.ui.notify("Usage: /keep run <name> <command>", "error");
+		return;
+	}
 	const session = registry.sessionName(parsed.first);
-	const err = registry.add({ name: parsed.first, session, mode: "run", command: parsed.rest, startedAt: new Date().toISOString() });
-	if (err) { ctx.ui.notify(err, "error"); return; }
+	const err = registry.add({
+		name: parsed.first,
+		session,
+		mode: "run",
+		command: parsed.rest,
+		startedAt: new Date().toISOString(),
+	});
+	if (err) {
+		ctx.ui.notify(err, "error");
+		return;
+	}
 	try {
 		await tmux("new-session", "-d", "-s", session, parsed.rest);
 		ctx.ui.notify(`Started: ${parsed.first}`, "info");
-	} catch (error) { registry.remove(parsed.first); ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error"); }
+	} catch (error) {
+		registry.remove(parsed.first);
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
+	}
 }
 
 async function cmdCapture(args: string, ctx: ExtensionCommandContext) {
 	const name = args.trim();
-	if (!name) { ctx.ui.notify("Usage: /keep capture <name>", "error"); return; }
+	if (!name) {
+		ctx.ui.notify("Usage: /keep capture <name>", "error");
+		return;
+	}
 	try {
 		const r = await tmux("capture-pane", "-t", registry.sessionName(name), "-p");
 		ctx.ui.notify(r.stdout.trimEnd() || `${name}: pane is empty`, "info");
-	} catch (error) { ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error"); }
+	} catch (error) {
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
+	}
 }
 
 async function cmdSend(args: string, ctx: ExtensionCommandContext) {
 	const parsed = parseTwoArgs(args);
-	if (!parsed) { ctx.ui.notify("Usage: /keep send <name> <text>", "error"); return; }
+	if (!parsed) {
+		ctx.ui.notify("Usage: /keep send <name> <text>", "error");
+		return;
+	}
 	try {
 		await tmux("send-keys", "-t", registry.sessionName(parsed.first), parsed.rest, "Enter");
 		ctx.ui.notify(`Sent to ${parsed.first}`, "info");
-	} catch (error) { ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error"); }
+	} catch (error) {
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
+	}
 }
 
 async function cmdStop(args: string, ctx: ExtensionCommandContext) {
 	const name = args.trim();
-	if (!name) { ctx.ui.notify("Usage: /keep stop <name>", "error"); return; }
+	if (!name) {
+		ctx.ui.notify("Usage: /keep stop <name>", "error");
+		return;
+	}
 	try {
 		await tmux("kill-session", "-t", registry.sessionName(name));
 		registry.remove(name);
 		ctx.ui.notify(`Stopped: ${name}`, "info");
-	} catch (error) { ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error"); }
+	} catch (error) {
+		ctx.ui.notify(`Failed: ${errorMessage(error)}`, "error");
+	}
 }
 
-async function cmdList(ctx: ExtensionCommandContext) {
+function cmdList(ctx: ExtensionCommandContext) {
 	ctx.ui.notify(formatList(registry.list()), "info");
 }

@@ -1,5 +1,5 @@
 {
-  "dolt_mode": "server",
-  "dolt_database": "beads",
-  "issue_prefix": "pit"
+	"dolt_mode": "server",
+	"dolt_database": "beads",
+	"issue_prefix": "pit"
 }

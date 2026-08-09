@@ -8,7 +8,9 @@ export function parseTwoArgs(raw: string): { first: string; rest: string } | nul
 	return { first, rest };
 }
 
-export function parseThreeArgs(raw: string): { first: string; second: string; rest: string } | null {
+export function parseThreeArgs(
+	raw: string,
+): { first: string; second: string; rest: string } | null {
 	const a = parseTwoArgs(raw);
 	if (!a) return null;
 	const b = parseTwoArgs(a.rest);
