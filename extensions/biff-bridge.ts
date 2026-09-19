@@ -188,6 +188,8 @@ async function sendAndWaitForTalkEvent(
 	});
 }
 
+// Returns the pane captured at send completion so the caller can use it as the
+// talk baseline without a second capture that could race incoming peer output.
 async function sendTalkLine(message: string): Promise<string> {
 	return enqueueCommand(async () => {
 		const before = await capturePane(KEEP_SESSION);
@@ -200,7 +202,7 @@ async function sendTalkLine(message: string): Promise<string> {
 			const pane = await capturePane(KEEP_SESSION);
 			if (occurrences(pane, message) <= prior) continue;
 			const afterMessage = pane.slice(pane.lastIndexOf(message) + message.length);
-			if (BIFF_PROMPT.test(afterMessage)) return paneDelta(before, pane);
+			if (BIFF_PROMPT.test(afterMessage)) return pane;
 		}
 		throw new Error("biff talk send did not complete within 10s");
 	});
@@ -605,8 +607,9 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			const invalid = rejectControlChars(params.message, "message");
 			if (invalid) return result(invalid);
 			try {
-				await sendTalkLine(params.message);
-				talkSnapshot = await capturePane(KEEP_SESSION);
+				// Use the pane observed at send completion as the baseline so a peer line
+				// arriving right after our send is not folded into the snapshot and lost.
+				talkSnapshot = await sendTalkLine(params.message);
 				return result("Talk message sent.");
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
