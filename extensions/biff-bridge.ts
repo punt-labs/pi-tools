@@ -157,10 +157,21 @@ function occurrences(text: string, needle: string): number {
 	return text.split(needle).length - 1;
 }
 
-async function sendAndWaitForTalkEvent(command: string, events: string[]): Promise<string> {
+interface TalkEventResult {
+	delta: string;
+	// The exact pane observed when the event fired. Using it as the talk baseline
+	// avoids a race where a peer's first line arrives between event detection and a
+	// later capture, which would fold that line into the baseline and lose it.
+	pane: string;
+}
+
+async function sendAndWaitForTalkEvent(
+	command: string,
+	events: string[],
+): Promise<TalkEventResult> {
 	return enqueueCommand(async () => {
 		const err = await ensureBiffRepl();
-		if (err) return "biff REPL not running: " + err;
+		if (err) return { delta: "biff REPL not running: " + err, pane: "" };
 		const before = await capturePane(KEEP_SESSION);
 		const counts = events.map((event) => occurrences(before, event));
 		await tmux("send-keys", "-t", KEEP_SESSION, "-l", command);
@@ -170,7 +181,7 @@ async function sendAndWaitForTalkEvent(command: string, events: string[]): Promi
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const pane = await capturePane(KEEP_SESSION);
 			if (events.some((event, index) => occurrences(pane, event) > counts[index])) {
-				return paneDelta(before, pane);
+				return { delta: paneDelta(before, pane), pane };
 			}
 		}
 		throw new Error("biff talk event did not arrive within 10s");
@@ -523,7 +534,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			talkMode = "waiting";
 			const command = "talk " + params.to + (params.opening ? " " + params.opening : "");
 			try {
-				const output = await sendAndWaitForTalkEvent(command, [
+				const { delta, pane } = await sendAndWaitForTalkEvent(command, [
 					"Waiting for ",
 					"Connected to ",
 					" is not online.",
@@ -531,12 +542,14 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 					"Already in a talk",
 					"Error:",
 				]);
-				if (output.includes("Connected to ")) talkMode = "connected";
-				else if (output.includes("Waiting for ")) talkMode = "waiting";
+				if (delta.includes("Connected to ")) talkMode = "connected";
+				else if (delta.includes("Waiting for ")) talkMode = "waiting";
 				else talkMode = "idle";
-				if (talkMode === "idle") return result(output);
-				talkSnapshot = await capturePane(KEEP_SESSION);
-				return result(output);
+				if (talkMode === "idle") return result(delta);
+				// Baseline from the pane observed at event time so a peer line that lands
+				// during/just after connection is not folded into the snapshot and lost.
+				talkSnapshot = pane;
+				return result(delta);
 			} catch (error) {
 				talkMode = "idle";
 				return result("Failed: " + errorMessage(error));
@@ -609,7 +622,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute() {
 			if (talkMode === "idle") return result("No active talk session.");
 			try {
-				const output = await sendAndWaitForTalkEvent("end", [" ended.", " cancelled."]);
+				const { delta } = await sendAndWaitForTalkEvent("end", [" ended.", " cancelled."]);
 				// The talk is over on the relay; reset local state unconditionally so a
 				// failed REPL rebuild cannot wedge the bridge and re-send end on retry.
 				try {
@@ -618,7 +631,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 					talkMode = "idle";
 					talkSnapshot = "";
 				}
-				return result(output);
+				return result(delta);
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
