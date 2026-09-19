@@ -19,6 +19,15 @@ function result(text: string) {
 	return { content: [{ type: "text" as const, text }], details: {} };
 }
 
+// keep_send delivers one line via tmux literal input; literal mode still lets an
+// embedded newline/carriage return submit extra input to the kept process. The
+// tool contract is a single line, so reject any control character.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+function hasControlChars(value: string): boolean {
+	return CONTROL_CHARS.test(value);
+}
+
 function errorMessage(error: unknown): string {
 	if (error instanceof Error) return error.message;
 	return String(error);
@@ -232,6 +241,9 @@ export default function keepExtension(pi: ExtensionAPI) {
 			const params = rawParams as { name: string; text: string };
 			if (!registry.get(params.name)) {
 				return result(`Unknown kept session: ${params.name}`);
+			}
+			if (hasControlChars(params.text)) {
+				return result("text must not contain control characters (send one line at a time)");
 			}
 			try {
 				await tmux("send-keys", "-t", registry.sessionName(params.name), "-l", params.text);
@@ -488,6 +500,10 @@ async function cmdSend(args: string, ctx: ExtensionCommandContext) {
 	}
 	if (!registry.get(parsed.first)) {
 		ctx.ui.notify(`Unknown kept session: ${parsed.first}`, "error");
+		return;
+	}
+	if (hasControlChars(parsed.rest)) {
+		ctx.ui.notify("text must not contain control characters (send one line at a time)", "error");
 		return;
 	}
 	try {
