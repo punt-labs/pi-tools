@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { sendAndWait } from "../lib/tmux-wait.js";
+import { capturePane, sendAndWait } from "../lib/tmux-wait.js";
+import { wakeScheduler } from "../lib/wake-scheduler.js";
 
 const exec = promisify(execFile);
 
@@ -13,11 +14,45 @@ const STARTUP_TIMEOUT_MS = 15_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let lastUnreadNotified = 0;
+// Bumped on every session_shutdown. A poll captures the generation before it
+// awaits `status`; if it changes while awaiting, the session has ended and the
+// poll must not enqueue a wake or touch the UI of a replacement session.
+let sessionGeneration = 0;
 let queuedCommands = 0;
 let commandTail: Promise<void> = Promise.resolve();
+let talkMode: "idle" | "waiting" | "connected" = "idle";
+let talkSnapshot = "";
 
 async function tmux(...args: string[]) {
 	return exec("tmux", args);
+}
+
+async function tmuxSessionExists(): Promise<boolean> {
+	try {
+		await tmux("has-session", "-t", KEEP_SESSION);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function restartOwnedRepl(): Promise<void> {
+	// Serialize the whole teardown+rebuild against every other biff command so the
+	// unread poller can never issue `status` into a dying or half-started REPL.
+	await enqueueCommand(async () => {
+		if (await tmuxSessionExists()) {
+			await tmux("send-keys", "-t", KEEP_SESSION, "-l", "exit");
+			await tmux("send-keys", "-t", KEEP_SESSION, "Enter");
+			const deadline = Date.now() + 3000;
+			while (Date.now() < deadline && (await tmuxSessionExists())) {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+			if (await tmuxSessionExists()) await tmux("kill-session", "-t", KEEP_SESSION);
+		}
+		const startupError = await ensureBiffRepl();
+		if (startupError) throw new Error(startupError);
+		return sendAndWait(KEEP_SESSION, "tty " + BIFF_TTY, BIFF_PROMPT);
+	});
 }
 
 async function ensureBiffRepl(): Promise<string | null> {
@@ -54,12 +89,19 @@ function enqueueCommand<T>(operation: () => Promise<T>): Promise<T> {
 	});
 }
 
-async function biffCommand(cmd: string): Promise<string> {
+async function runBiffCommand(cmd: string): Promise<string> {
 	return enqueueCommand(async () => {
 		const err = await ensureBiffRepl();
 		if (err) return "biff REPL not running: " + err;
 		return sendAndWait(KEEP_SESSION, cmd, BIFF_PROMPT);
 	});
+}
+
+async function biffCommand(cmd: string): Promise<string> {
+	if (talkMode !== "idle") {
+		return "A talk session is active. Use biff_talk_send, biff_talk_read, or biff_talk_end.";
+	}
+	return runBiffCommand(cmd);
 }
 
 function result(text: string) {
@@ -71,8 +113,116 @@ function errorMessage(error: unknown): string {
 	return String(error);
 }
 
+// Model-controlled strings are sent to the biff REPL via tmux literal input.
+// Literal mode does not neutralize embedded newlines/carriage returns: the
+// terminal still treats them as Enter and would submit extra REPL commands.
+// Reject any control character so a single argument cannot inject commands.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+function rejectControlChars(value: string, field: string): string | undefined {
+	return CONTROL_CHARS.test(value) ? `${field} must not contain control characters.` : undefined;
+}
+
+function paneDelta(before: string, after: string): string {
+	let shared = 0;
+	const limit = Math.min(before.length, after.length);
+	while (shared < limit && before[shared] === after[shared]) shared += 1;
+	return after.slice(shared).trim();
+}
+
+function isTalkHangup(text: string): boolean {
+	return text.includes("Talk with ") && (text.includes(" ended.") || text.includes(" cancelled."));
+}
+
+function updateTalkMode(text: string): void {
+	if (text.includes("Connected to ")) talkMode = "connected";
+	if (isTalkHangup(text)) {
+		talkMode = "idle";
+	}
+}
+
+async function readTalkDelta(timeoutMs: number): Promise<string> {
+	const deadline = Date.now() + timeoutMs;
+	do {
+		const pane = await capturePane(KEEP_SESSION);
+		const delta = paneDelta(talkSnapshot, pane);
+		if (delta) {
+			talkSnapshot = pane;
+			updateTalkMode(delta);
+			return delta;
+		}
+		if (timeoutMs === 0) break;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	} while (Date.now() < deadline);
+	return "No new talk activity.";
+}
+
+function occurrences(text: string, needle: string): number {
+	return text.split(needle).length - 1;
+}
+
+interface TalkEventResult {
+	delta: string;
+	// The exact pane observed when the event fired. Using it as the talk baseline
+	// avoids a race where a peer's first line arrives between event detection and a
+	// later capture, which would fold that line into the baseline and lose it.
+	pane: string;
+}
+
+async function sendAndWaitForTalkEvent(
+	command: string,
+	events: string[],
+): Promise<TalkEventResult> {
+	return enqueueCommand(async () => {
+		const err = await ensureBiffRepl();
+		if (err) return { delta: "biff REPL not running: " + err, pane: "" };
+		const before = await capturePane(KEEP_SESSION);
+		const counts = events.map((event) => occurrences(before, event));
+		await tmux("send-keys", "-t", KEEP_SESSION, "-l", command);
+		await tmux("send-keys", "-t", KEEP_SESSION, "Enter");
+		const deadline = Date.now() + 10_000;
+		while (Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const pane = await capturePane(KEEP_SESSION);
+			if (events.some((event, index) => occurrences(pane, event) > counts[index])) {
+				return { delta: paneDelta(before, pane), pane };
+			}
+		}
+		throw new Error("biff talk event did not arrive within 10s");
+	});
+}
+
+// Returns the pane captured at send completion so the caller can use it as the
+// talk baseline without a second capture that could race incoming peer output.
+async function sendTalkLine(message: string): Promise<string> {
+	return enqueueCommand(async () => {
+		const before = await capturePane(KEEP_SESSION);
+		const prior = occurrences(before, message);
+		await tmux("send-keys", "-t", KEEP_SESSION, "-l", message);
+		await tmux("send-keys", "-t", KEEP_SESSION, "Enter");
+		const deadline = Date.now() + 10_000;
+		while (Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const pane = await capturePane(KEEP_SESSION);
+			if (occurrences(pane, message) <= prior) continue;
+			const afterMessage = pane.slice(pane.lastIndexOf(message) + message.length);
+			if (BIFF_PROMPT.test(afterMessage)) return pane;
+		}
+		throw new Error("biff talk send did not complete within 10s");
+	});
+}
+
 export default function biffBridgeExtension(pi: ExtensionAPI) {
+	pi.on("agent_settled", () => wakeScheduler.flush());
 	pi.on("session_start", async (_event, ctx) => {
+		wakeScheduler.configure(pi, ctx);
+		// Sample the generation before any await so a session_shutdown during
+		// startup (which increments it) invalidates this session's poll timer
+		// rather than the timer inheriting the post-shutdown value.
+		const generation = sessionGeneration;
+		// A fresh Pi session must re-announce any standing unread mail, so clear the
+		// baseline that suppresses duplicate notifications within a single session.
+		lastUnreadNotified = 0;
 		const err = await ensureBiffRepl();
 		if (err) {
 			ctx.ui.notify("biff-bridge: could not start biff REPL: " + err, "warning");
@@ -80,21 +230,41 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		}
 
 		// Each Pi process owns a distinct biff identity and tmux session.
-		await biffCommand("tty " + BIFF_TTY);
+		await runBiffCommand("tty " + BIFF_TTY);
+
+		// If the session shut down while we were starting up, do not install a
+		// poll timer that would outlive this session (session_shutdown already ran
+		// and cannot clear a timer created afterwards).
+		if (generation !== sessionGeneration) return;
 
 		ctx.ui.setStatus("biff", "biff: connected");
 
 		pollTimer = setInterval(() => {
-			void pollUnread(ctx);
+			void pollUnread(ctx, generation);
 		}, POLL_INTERVAL_MS);
 	});
 
 	pi.on("session_shutdown", async () => {
+		sessionGeneration += 1;
+		wakeScheduler.shutdown();
+		talkMode = "idle";
+		talkSnapshot = "";
 		if (pollTimer) {
 			clearInterval(pollTimer);
 			pollTimer = undefined;
 		}
 		try {
+			await tmux("send-keys", "-t", KEEP_SESSION, "-l", "exit");
+			await tmux("send-keys", "-t", KEEP_SESSION, "Enter");
+			const deadline = Date.now() + 3000;
+			while (Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				try {
+					await tmux("has-session", "-t", KEEP_SESSION);
+				} catch {
+					return;
+				}
+			}
 			await tmux("kill-session", "-t", KEEP_SESSION);
 		} catch {
 			// The REPL may already have exited.
@@ -149,6 +319,9 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { to: string; message: string };
+			const invalid =
+				rejectControlChars(params.to, "to") ?? rejectControlChars(params.message, "message");
+			if (invalid) return result(invalid);
 			try {
 				return result(await biffCommand("write " + params.to + " " + params.message));
 			} catch (error) {
@@ -160,18 +333,27 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "biff_plan",
 		label: "Biff Plan",
-		description: "Set what you are currently working on. " + "Visible to teammates via biff_who.",
+		description: "Set or clear what you are currently working on. Visible via biff_who.",
 		parameters: {
 			type: "object",
 			properties: {
 				text: { type: "string", description: "Plan text describing current work" },
+				clear: { type: "boolean", description: "Clear the current plan" },
 			},
-			required: ["text"],
 		},
 		async execute(_toolCallId, rawParams) {
-			const params = rawParams as { text: string };
+			const params = rawParams as { text?: string; clear?: boolean };
+			const text = params.text?.trim();
+			if (!params.clear && !text) {
+				return result("Provide non-empty text or set clear=true.");
+			}
+			if (text) {
+				const invalid = rejectControlChars(text, "text");
+				if (invalid) return result(invalid);
+			}
+			const command = params.clear ? "plan clear" : "plan " + (text ?? "");
 			try {
-				return result(await biffCommand("plan " + params.text));
+				return result(await biffCommand(command));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -191,6 +373,8 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { user: string };
+			const invalid = rejectControlChars(params.user, "user");
+			if (invalid) return result(invalid);
 			try {
 				return result(await biffCommand("finger " + params.user));
 			} catch (error) {
@@ -198,17 +382,295 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			}
 		},
 	});
+
+	pi.registerTool({
+		name: "biff_status",
+		label: "Biff Status",
+		description: "Show relay connection, identity, session, unread count, and wall.",
+		parameters: { type: "object", properties: {} },
+		async execute() {
+			try {
+				return result(await biffCommand("status"));
+			} catch (error) {
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "biff_last",
+		label: "Biff Last",
+		description: "Show recent biff session login and logout history.",
+		parameters: {
+			type: "object",
+			properties: {
+				user: { type: "string", description: "Optional user filter" },
+				count: { type: "number", description: "Maximum entries, 1 through 100" },
+			},
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as { user?: string; count?: number };
+			const normalizedCount =
+				params.count === undefined
+					? undefined
+					: Math.min(100, Math.max(1, Math.trunc(params.count)));
+			const count = normalizedCount === undefined ? "" : " --count " + String(normalizedCount);
+			if (params.user) {
+				const invalid = rejectControlChars(params.user, "user");
+				if (invalid) return result(invalid);
+			}
+			const user = params.user ? " " + params.user : "";
+			try {
+				return result(await biffCommand("last" + count + user));
+			} catch (error) {
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "biff_wall",
+		label: "Biff Wall",
+		description: "Read, post, or clear the team wall broadcast.",
+		parameters: {
+			type: "object",
+			properties: {
+				action: { type: "string", enum: ["read", "post", "clear"] },
+				message: { type: "string", description: "Broadcast text for post" },
+				duration: { type: "string", description: "Optional duration such as 30m or 2h" },
+			},
+			required: ["action"],
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as unknown as {
+				action: "read" | "post" | "clear";
+				message?: string;
+				duration?: string;
+			};
+			let command = "wall";
+			if (params.action === "clear") command = "wall clear";
+			if (params.action === "post") {
+				const message = params.message?.trim();
+				if (!message) return result("A non-empty message is required to post the wall.");
+				const invalid =
+					rejectControlChars(message, "message") ??
+					(params.duration ? rejectControlChars(params.duration, "duration") : undefined);
+				if (invalid) return result(invalid);
+				command = "wall " + message;
+				if (params.duration) command += " " + params.duration;
+			}
+			try {
+				return result(await biffCommand(command));
+			} catch (error) {
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "biff_mesg",
+		label: "Biff Mesg",
+		description: "Enable or suppress message notifications for this biff session.",
+		parameters: {
+			type: "object",
+			properties: { value: { type: "string", enum: ["y", "n"] } },
+			required: ["value"],
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as unknown as { value: "y" | "n" };
+			try {
+				return result(await biffCommand("mesg " + params.value));
+			} catch (error) {
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "biff_tty",
+		label: "Biff TTY",
+		description: "Rename this biff session's human-readable TTY alias.",
+		parameters: {
+			type: "object",
+			properties: { name: { type: "string", description: "Unique TTY alias" } },
+			required: ["name"],
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as { name: string };
+			const invalid = rejectControlChars(params.name, "name");
+			if (invalid) return result(invalid);
+			try {
+				return result(await biffCommand("tty " + params.name));
+			} catch (error) {
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "biff_timestamps",
+		label: "Biff Timestamps",
+		description: "Turn timestamps on or off for subsequently displayed talk messages.",
+		parameters: {
+			type: "object",
+			properties: { value: { type: "string", enum: ["on", "off"] } },
+			required: ["value"],
+		},
+		async execute(_toolCallId, rawParams) {
+			const params = rawParams as unknown as { value: "on" | "off" };
+			try {
+				return result(await biffCommand("timestamps " + params.value));
+			} catch (error) {
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "biff_talk_start",
+		label: "Biff Talk Start",
+		description: "Invite a specific user:tty session to talk, or accept their pending invite.",
+		parameters: {
+			type: "object",
+			properties: {
+				to: { type: "string", description: "Specific user:tty address" },
+				opening: { type: "string", description: "Optional opening message" },
+			},
+			required: ["to"],
+		},
+		async execute(_toolCallId, rawParams) {
+			if (talkMode !== "idle") return result("A talk session is already active.");
+			const params = rawParams as { to: string; opening?: string };
+			const invalid =
+				rejectControlChars(params.to, "to") ??
+				(params.opening ? rejectControlChars(params.opening, "opening") : undefined);
+			if (invalid) return result(invalid);
+			// Close the idle gate synchronously, before any await, so a second talk start
+			// or an ordinary biff tool issued in the same turn cannot slip past it.
+			talkMode = "waiting";
+			const command = "talk " + params.to + (params.opening ? " " + params.opening : "");
+			try {
+				const { delta, pane } = await sendAndWaitForTalkEvent(command, [
+					"Waiting for ",
+					"Connected to ",
+					" is not online.",
+					"Talk needs a specific session",
+					"Already in a talk",
+					"Error:",
+				]);
+				if (delta.includes("Connected to ")) talkMode = "connected";
+				else if (delta.includes("Waiting for ")) talkMode = "waiting";
+				else talkMode = "idle";
+				if (talkMode === "idle") return result(delta);
+				// Baseline from the pane observed at event time so a peer line that lands
+				// during/just after connection is not folded into the snapshot and lost.
+				talkSnapshot = pane;
+				return result(delta);
+			} catch (error) {
+				talkMode = "idle";
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "biff_talk_read",
+		label: "Biff Talk Read",
+		description: "Read newly arrived talk activity and refresh connection state.",
+		parameters: {
+			type: "object",
+			properties: {
+				timeoutMs: { type: "number", description: "Wait up to this many milliseconds" },
+			},
+		},
+		async execute(_toolCallId, rawParams) {
+			if (talkMode === "idle") return result("No active talk session.");
+			const params = rawParams as { timeoutMs?: number };
+			const timeout = Math.max(0, Math.min(params.timeoutMs ?? 0, 10_000));
+			try {
+				const output = await readTalkDelta(timeout);
+				if (isTalkHangup(output)) {
+					// The talk is over on the relay; reset local state unconditionally so a
+					// failed REPL rebuild cannot wedge the bridge and re-send end on retry.
+					try {
+						await restartOwnedRepl();
+					} finally {
+						talkMode = "idle";
+						talkSnapshot = "";
+					}
+				}
+				return result(output);
+			} catch (error) {
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "biff_talk_send",
+		label: "Biff Talk Send",
+		description: "Send one line to the currently connected talk partner.",
+		parameters: {
+			type: "object",
+			properties: { message: { type: "string", description: "Talk message" } },
+			required: ["message"],
+		},
+		async execute(_toolCallId, rawParams) {
+			if (talkMode !== "connected") return result("Talk is not connected yet.");
+			const params = rawParams as { message: string };
+			const invalid = rejectControlChars(params.message, "message");
+			if (invalid) return result(invalid);
+			try {
+				// Use the pane observed at send completion as the baseline so a peer line
+				// arriving right after our send is not folded into the snapshot and lost.
+				talkSnapshot = await sendTalkLine(params.message);
+				return result("Talk message sent.");
+			} catch (error) {
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "biff_talk_end",
+		label: "Biff Talk End",
+		description: "End a connected talk or withdraw a pending invitation.",
+		parameters: { type: "object", properties: {} },
+		async execute() {
+			if (talkMode === "idle") return result("No active talk session.");
+			try {
+				const { delta } = await sendAndWaitForTalkEvent("end", [" ended.", " cancelled."]);
+				// The talk is over on the relay; reset local state unconditionally so a
+				// failed REPL rebuild cannot wedge the bridge and re-send end on retry.
+				try {
+					await restartOwnedRepl();
+				} finally {
+					talkMode = "idle";
+					talkSnapshot = "";
+				}
+				return result(delta);
+			} catch (error) {
+				return result("Failed: " + errorMessage(error));
+			}
+		},
+	});
 }
 
-async function pollUnread(ctx: {
-	ui: {
-		setStatus(id: string, text: string | undefined): void;
-		notify(msg: string, type: "info" | "warning" | "error"): void;
-	};
-}) {
-	if (queuedCommands > 0) return;
+async function pollUnread(
+	ctx: {
+		ui: {
+			setStatus(id: string, text: string | undefined): void;
+			notify(msg: string, type: "info" | "warning" | "error"): void;
+		};
+	},
+	generation: number,
+) {
+	if (queuedCommands > 0 || talkMode !== "idle") return;
 	try {
 		const output = await biffCommand("status");
+		// The session may have shut down while we awaited `status`; if so, do not
+		// enqueue a wake or write UI that belongs to a replacement session.
+		if (generation !== sessionGeneration) return;
 		const match = /unread:\s*(\d+)/.exec(output);
 		const count = match ? parseInt(match[1], 10) : 0;
 
@@ -216,6 +678,12 @@ async function pollUnread(ctx: {
 			ctx.ui.setStatus("biff", "biff: " + String(count) + " unread");
 			if (count > lastUnreadNotified) {
 				ctx.ui.notify("biff: " + String(count) + " unread message(s)", "info");
+				wakeScheduler.enqueue("biff:inbox", {
+					source: "Biff inbox update",
+					content:
+						`You have ${String(count)} unread Biff message(s). ` +
+						"Call biff_read to retrieve them and continue the conversation or task.",
+				});
 			}
 		} else {
 			ctx.ui.setStatus("biff", "biff: connected");

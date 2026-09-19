@@ -1,7 +1,8 @@
 # Testing
 
-`pi-tools` tests extensions at multiple levels. Every tier except
-the pi smoke test runs without external dependencies.
+`pi-tools` tests extensions at multiple levels. The default `make check` gate
+is offline and deterministic. Real-relay and Pi smoke tests are explicit,
+external integration tiers.
 
 ## Testing pyramid
 
@@ -28,6 +29,11 @@ Unit tests live in `tests/` and cover pure logic in `lib/`:
 - `keep.test.ts` — argument parsing for two-arg and three-arg
   patterns
 - `tmux-wait.test.ts` — exact command framing and prompt completion
+- `wake-scheduler.test.ts` — one-shot delivery, busy-event coalescing,
+  cancellation, in-flight cancellation, and shutdown
+- `keep-watch.test.ts` — first, changed, always, and never wake policies
+- `every.test.ts` — bounded `/every` parsing for seconds, minutes, hours,
+  arbitrary instructions, and invalid syntax
 
 These tests have no external dependencies. They verify input/output
 behavior of extracted functions.
@@ -45,14 +51,18 @@ All checked-in markdown must pass markdownlint, excluding
 ## Biff real-relay integration
 
 `biff-bridge.integration.test.ts` owns both sides of a real message
-exchange. It verifies:
+exchange. It verifies the complete Biff REPL surface:
 
-- extension startup creates and names a durable biff session
-- the bridge sends a message that a peer receives
-- a peer message triggers the automatic unread notification
-- `biff_read` returns the complete inbound message
-- extension shutdown removes its tmux session
-- test cleanup removes both endpoints even after a failed assertion
+- startup, status, `tty`, `who`, `finger`, `last`, plan set/clear,
+  `mesg n`/`mesg y`, timestamp on/off, and graceful `exit`
+- direct writes and reads in both directions, including automatic
+  unread notification, footer state, and scheduled agent wake-up
+- wall post, peer read, and clear
+- talk invite, accept, connected state, timestamped bidirectional
+  lines, local hangup, and remote hangup
+- the bridge as both talk inviter and accepter
+- restoration of ordinary command framing after modal talk
+- extension shutdown and unconditional cleanup of both owned endpoints
 
 Run separately because it requires local biff authentication and relay
 access:
@@ -76,6 +86,29 @@ Run separately because it requires pi and a model API key:
 - `make smoke-pi`
 
 Not included in `make check`.
+
+## Manual wake-up validation
+
+After changing scheduler integration, reload a Pi session that uses the local
+package and verify bounded recurring delivery:
+
+```text
+/every 5s Say exactly "scheduler test" and nothing else 2
+```
+
+Expected: two autonomous turns followed by `/every status` reporting no active
+schedule.
+
+Verify an output-driven wake by asking the agent to start this watch and stop
+it after the first update:
+
+```text
+keep_watch(name="wake-test", interval=5, command="date +%s", wake="always")
+```
+
+Finally, leave Pi idle and send its Biff identity a message from a separately
+owned Biff endpoint. Expected: an automatic inbox turn within the 15-second
+polling window, followed by an explicit `biff_read` call.
 
 ## Required gates
 

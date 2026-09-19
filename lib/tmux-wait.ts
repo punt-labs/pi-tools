@@ -24,7 +24,8 @@ export async function sendAndWait(
 	const before = await capturePane(session);
 	const priorOccurrences = commandLineIndexes(before, cmd, prompt).length;
 
-	await exec("tmux", ["send-keys", "-t", session, cmd, "Enter"]);
+	await exec("tmux", ["send-keys", "-t", session, "-l", cmd]);
+	await exec("tmux", ["send-keys", "-t", session, "Enter"]);
 
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
@@ -92,7 +93,7 @@ function matches(pattern: RegExp, value: string): boolean {
 	return pattern.test(value);
 }
 
-async function capturePane(session: string): Promise<string> {
+export async function capturePane(session: string): Promise<string> {
 	const r = await exec("tmux", ["capture-pane", "-t", session, "-p", "-S", "-", "-J"]);
 	return r.stdout;
 }
