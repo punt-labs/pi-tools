@@ -368,8 +368,11 @@ async function cmdWatch(args: string, ctx: ExtensionCommandContext) {
 		return;
 	}
 	const interval = parseInt(parsed.second, 10);
-	if (isNaN(interval) || interval <= 0) {
-		ctx.ui.notify("Interval must be a positive number", "error");
+	if (isNaN(interval) || interval <= 0 || !isSchedulableDelay(interval * 1000)) {
+		ctx.ui.notify(
+			`Interval must be a positive number no larger than ${String(MAX_TIMER_SECONDS)} seconds`,
+			"error",
+		);
 		return;
 	}
 	const session = registry.sessionName(parsed.first);
@@ -438,8 +441,11 @@ function cmdAfter(args: string, ctx: ExtensionCommandContext): void {
 		return;
 	}
 	const seconds = Number(parsed.second);
-	if (!Number.isFinite(seconds) || seconds <= 0) {
-		ctx.ui.notify("Seconds must be a positive number", "error");
+	if (!Number.isFinite(seconds) || seconds <= 0 || !isSchedulableDelay(seconds * 1000)) {
+		ctx.ui.notify(
+			`Seconds must be a positive number no larger than ${String(MAX_TIMER_SECONDS)}`,
+			"error",
+		);
 		return;
 	}
 	if (!registry.get(parsed.first)) {
