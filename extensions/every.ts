@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { wakeScheduler } from "../lib/wake-scheduler.js";
+import { MAX_TIMER_MS, isSchedulableDelay, wakeScheduler } from "../lib/wake-scheduler.js";
 
 const EVERY_KEY = "every";
 
@@ -28,8 +28,8 @@ export function parseEvery(raw: string): EverySpec | string {
 	}
 	const multiplier = unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000;
 	const intervalMs = amount * multiplier;
-	if (!Number.isSafeInteger(intervalMs)) {
-		return "Interval is too large; choose a smaller value.";
+	if (!isSchedulableDelay(intervalMs)) {
+		return `Interval must be between 1ms and ${String(MAX_TIMER_MS)}ms (~24.8 days); choose a smaller value.`;
 	}
 	return {
 		intervalMs,

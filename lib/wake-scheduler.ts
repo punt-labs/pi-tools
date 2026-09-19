@@ -9,6 +9,15 @@ export interface ScheduledWake {
 type Timer = ReturnType<typeof setTimeout>;
 type Producer = () => ScheduledWake | undefined | Promise<ScheduledWake | undefined>;
 
+// Node clamps setTimeout delays above the 32-bit signed maximum to ~1 ms, which
+// would turn a large interval into a busy loop. Reject anything past this bound
+// at every scheduling boundary.
+export const MAX_TIMER_MS = 2_147_483_647;
+
+export function isSchedulableDelay(ms: number): boolean {
+	return Number.isSafeInteger(ms) && ms > 0 && ms <= MAX_TIMER_MS;
+}
+
 export class WakeScheduler {
 	private readonly timers = new Map<string, Timer>();
 	private readonly tokens = new Map<string, symbol>();
@@ -23,6 +32,11 @@ export class WakeScheduler {
 	}
 
 	scheduleEvery(key: string, intervalMs: number, producer: Producer): void {
+		if (!isSchedulableDelay(intervalMs)) {
+			throw new RangeError(
+				`interval ${String(intervalMs)}ms is out of range (1..${String(MAX_TIMER_MS)})`,
+			);
+		}
 		this.cancel(key);
 		const token = Symbol(key);
 		this.tokens.set(key, token);
@@ -52,6 +66,11 @@ export class WakeScheduler {
 	}
 
 	scheduleAfter(key: string, delayMs: number, producer: Producer): void {
+		if (!isSchedulableDelay(delayMs)) {
+			throw new RangeError(
+				`delay ${String(delayMs)}ms is out of range (1..${String(MAX_TIMER_MS)})`,
+			);
+		}
 		this.cancel(key);
 		const token = Symbol(key);
 		this.tokens.set(key, token);

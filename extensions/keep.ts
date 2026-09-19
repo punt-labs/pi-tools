@@ -4,7 +4,9 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { parseTwoArgs, parseThreeArgs } from "../lib/parse.js";
 import * as registry from "../lib/registry.js";
 import { formatList, stripWatchHeader } from "../lib/format.js";
-import { wakeScheduler } from "../lib/wake-scheduler.js";
+import { MAX_TIMER_MS, isSchedulableDelay, wakeScheduler } from "../lib/wake-scheduler.js";
+
+const MAX_TIMER_SECONDS = Math.floor(MAX_TIMER_MS / 1000);
 
 const exec = promisify(execFile);
 const watchSnapshots = new Map<string, string>();
@@ -60,8 +62,14 @@ export default function keepExtension(pi: ExtensionAPI) {
 				wake?: "change" | "always" | "never";
 				message?: string;
 			};
-			if (!Number.isFinite(params.interval) || params.interval <= 0) {
-				return result("Interval must be a positive number");
+			if (
+				!Number.isFinite(params.interval) ||
+				params.interval <= 0 ||
+				!isSchedulableDelay(params.interval * 1000)
+			) {
+				return result(
+					`Interval must be a positive number no larger than ${String(MAX_TIMER_SECONDS)} seconds`,
+				);
 			}
 			const session = registry.sessionName(params.name);
 			const err = registry.add({
@@ -153,8 +161,14 @@ export default function keepExtension(pi: ExtensionAPI) {
 		},
 		execute(_toolCallId, rawParams) {
 			const params = rawParams as { name: string; seconds: number; message: string };
-			if (!Number.isFinite(params.seconds) || params.seconds <= 0) {
-				return Promise.resolve(result("Seconds must be a positive number"));
+			if (
+				!Number.isFinite(params.seconds) ||
+				params.seconds <= 0 ||
+				!isSchedulableDelay(params.seconds * 1000)
+			) {
+				return Promise.resolve(
+					result(`Seconds must be a positive number no larger than ${String(MAX_TIMER_SECONDS)}`),
+				);
 			}
 			if (!registry.get(params.name)) {
 				return Promise.resolve(result(`Unknown kept session: ${params.name}`));
@@ -185,6 +199,9 @@ export default function keepExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { name: string };
+			if (!registry.get(params.name)) {
+				return result(`Unknown kept session: ${params.name}`);
+			}
 			try {
 				const r = await tmux("capture-pane", "-t", registry.sessionName(params.name), "-p");
 				const kept = registry.get(params.name);
@@ -213,6 +230,9 @@ export default function keepExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { name: string; text: string };
+			if (!registry.get(params.name)) {
+				return result(`Unknown kept session: ${params.name}`);
+			}
 			try {
 				await tmux("send-keys", "-t", registry.sessionName(params.name), "-l", params.text);
 				await tmux("send-keys", "-t", registry.sessionName(params.name), "Enter");
@@ -236,6 +256,9 @@ export default function keepExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { name: string };
+			if (!registry.get(params.name)) {
+				return result(`Unknown kept session: ${params.name}`);
+			}
 			try {
 				wakeScheduler.cancel(`watch:${params.name}`);
 				wakeScheduler.cancel(`after:${params.name}`);
@@ -436,6 +459,10 @@ async function cmdCapture(args: string, ctx: ExtensionCommandContext) {
 		ctx.ui.notify("Usage: /keep capture <name>", "error");
 		return;
 	}
+	if (!registry.get(name)) {
+		ctx.ui.notify(`Unknown kept session: ${name}`, "error");
+		return;
+	}
 	try {
 		const r = await tmux("capture-pane", "-t", registry.sessionName(name), "-p");
 		const kept = registry.get(name);
@@ -453,6 +480,10 @@ async function cmdSend(args: string, ctx: ExtensionCommandContext) {
 		ctx.ui.notify("Usage: /keep send <name> <text>", "error");
 		return;
 	}
+	if (!registry.get(parsed.first)) {
+		ctx.ui.notify(`Unknown kept session: ${parsed.first}`, "error");
+		return;
+	}
 	try {
 		await tmux("send-keys", "-t", registry.sessionName(parsed.first), "-l", parsed.rest);
 		await tmux("send-keys", "-t", registry.sessionName(parsed.first), "Enter");
@@ -466,6 +497,10 @@ async function cmdStop(args: string, ctx: ExtensionCommandContext) {
 	const name = args.trim();
 	if (!name) {
 		ctx.ui.notify("Usage: /keep stop <name>", "error");
+		return;
+	}
+	if (!registry.get(name)) {
+		ctx.ui.notify(`Unknown kept session: ${name}`, "error");
 		return;
 	}
 	try {

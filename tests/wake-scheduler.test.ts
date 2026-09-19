@@ -1,6 +1,22 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WakeScheduler } from "../lib/wake-scheduler.js";
+import { MAX_TIMER_MS, WakeScheduler, isSchedulableDelay } from "../lib/wake-scheduler.js";
+
+describe("isSchedulableDelay", () => {
+	it("accepts positive delays up to the Node timer ceiling", () => {
+		expect(isSchedulableDelay(1)).toBe(true);
+		expect(isSchedulableDelay(MAX_TIMER_MS)).toBe(true);
+	});
+
+	it("rejects zero, negative, non-integer, and over-ceiling delays", () => {
+		expect(isSchedulableDelay(0)).toBe(false);
+		expect(isSchedulableDelay(-1)).toBe(false);
+		expect(isSchedulableDelay(1.5)).toBe(false);
+		expect(isSchedulableDelay(MAX_TIMER_MS + 1)).toBe(false);
+		expect(isSchedulableDelay(Number.POSITIVE_INFINITY)).toBe(false);
+		expect(isSchedulableDelay(Number.NaN)).toBe(false);
+	});
+});
 
 interface SentMessage {
 	message: { content: string };
@@ -9,6 +25,14 @@ interface SentMessage {
 
 describe("WakeScheduler", () => {
 	afterEach(() => vi.useRealTimers());
+
+	it("throws for delays outside the schedulable range", () => {
+		const { scheduler } = configuredScheduler(() => true);
+		expect(() => scheduler.scheduleAfter("x", MAX_TIMER_MS + 1, () => undefined)).toThrow(
+			RangeError,
+		);
+		expect(() => scheduler.scheduleEvery("y", 0, () => undefined)).toThrow(RangeError);
+	});
 
 	it("delivers a one-shot wake and triggers an agent turn", async () => {
 		vi.useFakeTimers();

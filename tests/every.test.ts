@@ -39,15 +39,17 @@ describe("parseEvery", () => {
 		expect(parseEvery(`30s say hello ${huge}`)).toBeTypeOf("string");
 	});
 
-	it("rejects intervals whose millisecond product overflows the safe range", () => {
-		// 2501999793h * 3_600_000 ms exceeds Number.MAX_SAFE_INTEGER (max safe: 2501999792h).
-		expect(parseEvery("2501999793h say hello 2")).toBeTypeOf("string");
+	it("rejects intervals above the Node timer limit", () => {
+		// Node clamps setTimeout delays past 2^31-1 ms to ~1ms, so these must be refused.
+		expect(parseEvery("2000000h say hello 2")).toBeTypeOf("string"); // 7.2e12 ms
+		expect(parseEvery("25d say hello 2")).toBeTypeOf("string"); // no day unit, but guard the intent
+		expect(parseEvery("2147483648s say hello 2")).toBeTypeOf("string"); // 1ms over the limit
 	});
 
-	it("keeps a large-but-safe interval", () => {
-		// 2000000h * 3_600_000 = 7.2e12 ms, well within the safe-integer range.
-		const parsed = parseEvery("2000000h say hello 2");
+	it("keeps the largest schedulable interval", () => {
+		// 2147483647ms is exactly the Node timer ceiling.
+		const parsed = parseEvery("2147483s say hello 2");
 		expect(parsed).not.toBeTypeOf("string");
-		expect(parsed).toMatchObject({ intervalMs: 7_200_000_000_000, maximumRuns: 2 });
+		expect(parsed).toMatchObject({ intervalMs: 2_147_483_000, maximumRuns: 2 });
 	});
 });
