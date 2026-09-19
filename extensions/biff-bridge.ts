@@ -33,18 +33,22 @@ async function tmuxSessionExists(): Promise<boolean> {
 }
 
 async function restartOwnedRepl(): Promise<void> {
-	if (await tmuxSessionExists()) {
-		await tmux("send-keys", "-t", KEEP_SESSION, "-l", "exit");
-		await tmux("send-keys", "-t", KEEP_SESSION, "Enter");
-		const deadline = Date.now() + 3000;
-		while (Date.now() < deadline && (await tmuxSessionExists())) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
+	// Serialize the whole teardown+rebuild against every other biff command so the
+	// unread poller can never issue `status` into a dying or half-started REPL.
+	await enqueueCommand(async () => {
+		if (await tmuxSessionExists()) {
+			await tmux("send-keys", "-t", KEEP_SESSION, "-l", "exit");
+			await tmux("send-keys", "-t", KEEP_SESSION, "Enter");
+			const deadline = Date.now() + 3000;
+			while (Date.now() < deadline && (await tmuxSessionExists())) {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+			if (await tmuxSessionExists()) await tmux("kill-session", "-t", KEEP_SESSION);
 		}
-		if (await tmuxSessionExists()) await tmux("kill-session", "-t", KEEP_SESSION);
-	}
-	const startupError = await ensureBiffRepl();
-	if (startupError) throw new Error(startupError);
-	await runBiffCommand("tty " + BIFF_TTY);
+		const startupError = await ensureBiffRepl();
+		if (startupError) throw new Error(startupError);
+		return sendAndWait(KEEP_SESSION, "tty " + BIFF_TTY, BIFF_PROMPT);
+	});
 }
 
 async function ensureBiffRepl(): Promise<string | null> {
@@ -112,9 +116,13 @@ function paneDelta(before: string, after: string): string {
 	return after.slice(shared).trim();
 }
 
+function isTalkHangup(text: string): boolean {
+	return text.includes("Talk with ") && (text.includes(" ended.") || text.includes(" cancelled."));
+}
+
 function updateTalkMode(text: string): void {
 	if (text.includes("Connected to ")) talkMode = "connected";
-	if (text.includes("Talk with ") && (text.includes(" ended.") || text.includes(" cancelled."))) {
+	if (isTalkHangup(text)) {
 		talkMode = "idle";
 	}
 }
@@ -181,6 +189,9 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 	pi.on("agent_settled", () => wakeScheduler.flush());
 	pi.on("session_start", async (_event, ctx) => {
 		wakeScheduler.configure(pi, ctx);
+		// A fresh Pi session must re-announce any standing unread mail, so clear the
+		// baseline that suppresses duplicate notifications within a single session.
+		lastUnreadNotified = 0;
 		const err = await ensureBiffRepl();
 		if (err) {
 			ctx.ui.notify("biff-bridge: could not start biff REPL: " + err, "warning");
@@ -473,6 +484,9 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			if (talkMode !== "idle") return result("A talk session is already active.");
+			// Close the idle gate synchronously, before any await, so a second talk start
+			// or an ordinary biff tool issued in the same turn cannot slip past it.
+			talkMode = "waiting";
 			const params = rawParams as { to: string; opening?: string };
 			const command = "talk " + params.to + (params.opening ? " " + params.opening : "");
 			try {
@@ -484,8 +498,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 					"Already in a talk",
 					"Error:",
 				]);
-				if (output.includes("Waiting for ")) talkMode = "waiting";
 				if (output.includes("Connected to ")) talkMode = "connected";
+				else if (output.includes("Waiting for ")) talkMode = "waiting";
+				else talkMode = "idle";
+				if (talkMode === "idle") return result(output);
 				talkSnapshot = await capturePane(KEEP_SESSION);
 				return result(output);
 			} catch (error) {
@@ -511,10 +527,11 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			const timeout = Math.max(0, Math.min(params.timeoutMs ?? 0, 10_000));
 			try {
 				const output = await readTalkDelta(timeout);
-				if (output.includes(" ended.") || output.includes(" cancelled.")) {
+				if (isTalkHangup(output)) {
+					// Keep talkMode non-idle until the REPL is rebuilt so the poller stays gated.
+					await restartOwnedRepl();
 					talkMode = "idle";
 					talkSnapshot = "";
-					await restartOwnedRepl();
 				}
 				return result(output);
 			} catch (error) {
@@ -554,9 +571,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			if (talkMode === "idle") return result("No active talk session.");
 			try {
 				const output = await sendAndWaitForTalkEvent("end", [" ended.", " cancelled."]);
+				// Keep talkMode non-idle until the REPL is rebuilt so the poller stays gated.
+				await restartOwnedRepl();
 				talkMode = "idle";
 				talkSnapshot = "";
-				await restartOwnedRepl();
 				return result(output);
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
