@@ -109,6 +109,16 @@ function errorMessage(error: unknown): string {
 	return String(error);
 }
 
+// Model-controlled strings are sent to the biff REPL via tmux literal input.
+// Literal mode does not neutralize embedded newlines/carriage returns: the
+// terminal still treats them as Enter and would submit extra REPL commands.
+// Reject any control character so a single argument cannot inject commands.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+function rejectControlChars(value: string, field: string): string | undefined {
+	return CONTROL_CHARS.test(value) ? `${field} must not contain control characters.` : undefined;
+}
+
 function paneDelta(before: string, after: string): string {
 	let shared = 0;
 	const limit = Math.min(before.length, after.length);
@@ -282,6 +292,9 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { to: string; message: string };
+			const invalid =
+				rejectControlChars(params.to, "to") ?? rejectControlChars(params.message, "message");
+			if (invalid) return result(invalid);
 			try {
 				return result(await biffCommand("write " + params.to + " " + params.message));
 			} catch (error) {
@@ -307,6 +320,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			if (!params.clear && !text) {
 				return result("Provide non-empty text or set clear=true.");
 			}
+			if (text) {
+				const invalid = rejectControlChars(text, "text");
+				if (invalid) return result(invalid);
+			}
 			const command = params.clear ? "plan clear" : "plan " + (text ?? "");
 			try {
 				return result(await biffCommand(command));
@@ -329,6 +346,8 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { user: string };
+			const invalid = rejectControlChars(params.user, "user");
+			if (invalid) return result(invalid);
 			try {
 				return result(await biffCommand("finger " + params.user));
 			} catch (error) {
@@ -369,6 +388,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 					? undefined
 					: Math.min(100, Math.max(1, Math.trunc(params.count)));
 			const count = normalizedCount === undefined ? "" : " --count " + String(normalizedCount);
+			if (params.user) {
+				const invalid = rejectControlChars(params.user, "user");
+				if (invalid) return result(invalid);
+			}
 			const user = params.user ? " " + params.user : "";
 			try {
 				return result(await biffCommand("last" + count + user));
@@ -402,6 +425,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			if (params.action === "post") {
 				const message = params.message?.trim();
 				if (!message) return result("A non-empty message is required to post the wall.");
+				const invalid =
+					rejectControlChars(message, "message") ??
+					(params.duration ? rejectControlChars(params.duration, "duration") : undefined);
+				if (invalid) return result(invalid);
 				command = "wall " + message;
 				if (params.duration) command += " " + params.duration;
 			}
@@ -443,6 +470,8 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { name: string };
+			const invalid = rejectControlChars(params.name, "name");
+			if (invalid) return result(invalid);
 			try {
 				return result(await biffCommand("tty " + params.name));
 			} catch (error) {
@@ -484,10 +513,14 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			if (talkMode !== "idle") return result("A talk session is already active.");
+			const params = rawParams as { to: string; opening?: string };
+			const invalid =
+				rejectControlChars(params.to, "to") ??
+				(params.opening ? rejectControlChars(params.opening, "opening") : undefined);
+			if (invalid) return result(invalid);
 			// Close the idle gate synchronously, before any await, so a second talk start
 			// or an ordinary biff tool issued in the same turn cannot slip past it.
 			talkMode = "waiting";
-			const params = rawParams as { to: string; opening?: string };
 			const command = "talk " + params.to + (params.opening ? " " + params.opening : "");
 			try {
 				const output = await sendAndWaitForTalkEvent(command, [
@@ -528,10 +561,14 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			try {
 				const output = await readTalkDelta(timeout);
 				if (isTalkHangup(output)) {
-					// Keep talkMode non-idle until the REPL is rebuilt so the poller stays gated.
-					await restartOwnedRepl();
-					talkMode = "idle";
-					talkSnapshot = "";
+					// The talk is over on the relay; reset local state unconditionally so a
+					// failed REPL rebuild cannot wedge the bridge and re-send end on retry.
+					try {
+						await restartOwnedRepl();
+					} finally {
+						talkMode = "idle";
+						talkSnapshot = "";
+					}
 				}
 				return result(output);
 			} catch (error) {
@@ -552,6 +589,8 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, rawParams) {
 			if (talkMode !== "connected") return result("Talk is not connected yet.");
 			const params = rawParams as { message: string };
+			const invalid = rejectControlChars(params.message, "message");
+			if (invalid) return result(invalid);
 			try {
 				await sendTalkLine(params.message);
 				talkSnapshot = await capturePane(KEEP_SESSION);
@@ -571,10 +610,14 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			if (talkMode === "idle") return result("No active talk session.");
 			try {
 				const output = await sendAndWaitForTalkEvent("end", [" ended.", " cancelled."]);
-				// Keep talkMode non-idle until the REPL is rebuilt so the poller stays gated.
-				await restartOwnedRepl();
-				talkMode = "idle";
-				talkSnapshot = "";
+				// The talk is over on the relay; reset local state unconditionally so a
+				// failed REPL rebuild cannot wedge the bridge and re-send end on retry.
+				try {
+					await restartOwnedRepl();
+				} finally {
+					talkMode = "idle";
+					talkSnapshot = "";
+				}
 				return result(output);
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
