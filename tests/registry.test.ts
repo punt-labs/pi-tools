@@ -11,6 +11,22 @@ describe("sessionName", () => {
 	});
 });
 
+describe("isValidName", () => {
+	it("accepts letters, digits, hyphen, and underscore", () => {
+		expect(registry.isValidName("pr")).toBe(true);
+		expect(registry.isValidName("pr-checks_2")).toBe(true);
+		expect(registry.isValidName("A".repeat(64))).toBe(true);
+	});
+
+	it("rejects tmux target delimiters, whitespace, empty, and over-length names", () => {
+		expect(registry.isValidName("foo:1.0")).toBe(false);
+		expect(registry.isValidName("foo.bar")).toBe(false);
+		expect(registry.isValidName("foo bar")).toBe(false);
+		expect(registry.isValidName("")).toBe(false);
+		expect(registry.isValidName("A".repeat(65))).toBe(false);
+	});
+});
+
 describe("add", () => {
 	it("returns null on success", () => {
 		const err = registry.add({
@@ -22,6 +38,18 @@ describe("add", () => {
 			startedAt: "2026-01-01T00:00:00Z",
 		});
 		expect(err).toBeNull();
+	});
+
+	it("rejects an unsafe name before registering it", () => {
+		const err = registry.add({
+			name: "evil:1.0",
+			session: "keep-evil:1.0",
+			mode: "watch",
+			command: "cmd",
+			startedAt: "2026-01-01T00:00:00Z",
+		});
+		expect(err).toContain("Invalid name");
+		expect(registry.has("evil:1.0")).toBe(false);
 	});
 
 	it("returns error for duplicate name", () => {
