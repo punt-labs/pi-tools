@@ -216,6 +216,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 	pi.on("agent_settled", () => wakeScheduler.flush());
 	pi.on("session_start", async (_event, ctx) => {
 		wakeScheduler.configure(pi, ctx);
+		// Sample the generation before any await so a session_shutdown during
+		// startup (which increments it) invalidates this session's poll timer
+		// rather than the timer inheriting the post-shutdown value.
+		const generation = sessionGeneration;
 		// A fresh Pi session must re-announce any standing unread mail, so clear the
 		// baseline that suppresses duplicate notifications within a single session.
 		lastUnreadNotified = 0;
@@ -228,9 +232,13 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		// Each Pi process owns a distinct biff identity and tmux session.
 		await runBiffCommand("tty " + BIFF_TTY);
 
+		// If the session shut down while we were starting up, do not install a
+		// poll timer that would outlive this session (session_shutdown already ran
+		// and cannot clear a timer created afterwards).
+		if (generation !== sessionGeneration) return;
+
 		ctx.ui.setStatus("biff", "biff: connected");
 
-		const generation = sessionGeneration;
 		pollTimer = setInterval(() => {
 			void pollUnread(ctx, generation);
 		}, POLL_INTERVAL_MS);
