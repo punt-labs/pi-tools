@@ -14,6 +14,10 @@ const STARTUP_TIMEOUT_MS = 15_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let lastUnreadNotified = 0;
+// Bumped on every session_shutdown. A poll captures the generation before it
+// awaits `status`; if it changes while awaiting, the session has ended and the
+// poll must not enqueue a wake or touch the UI of a replacement session.
+let sessionGeneration = 0;
 let queuedCommands = 0;
 let commandTail: Promise<void> = Promise.resolve();
 let talkMode: "idle" | "waiting" | "connected" = "idle";
@@ -226,12 +230,14 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 
 		ctx.ui.setStatus("biff", "biff: connected");
 
+		const generation = sessionGeneration;
 		pollTimer = setInterval(() => {
-			void pollUnread(ctx);
+			void pollUnread(ctx, generation);
 		}, POLL_INTERVAL_MS);
 	});
 
 	pi.on("session_shutdown", async () => {
+		sessionGeneration += 1;
 		wakeScheduler.shutdown();
 		talkMode = "idle";
 		talkSnapshot = "";
@@ -642,15 +648,21 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 	});
 }
 
-async function pollUnread(ctx: {
-	ui: {
-		setStatus(id: string, text: string | undefined): void;
-		notify(msg: string, type: "info" | "warning" | "error"): void;
-	};
-}) {
+async function pollUnread(
+	ctx: {
+		ui: {
+			setStatus(id: string, text: string | undefined): void;
+			notify(msg: string, type: "info" | "warning" | "error"): void;
+		};
+	},
+	generation: number,
+) {
 	if (queuedCommands > 0 || talkMode !== "idle") return;
 	try {
 		const output = await biffCommand("status");
+		// The session may have shut down while we awaited `status`; if so, do not
+		// enqueue a wake or write UI that belongs to a replacement session.
+		if (generation !== sessionGeneration) return;
 		const match = /unread:\s*(\d+)/.exec(output);
 		const count = match ? parseInt(match[1], 10) : 0;
 
