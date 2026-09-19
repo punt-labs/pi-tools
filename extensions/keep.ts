@@ -340,6 +340,15 @@ export default function keepExtension(pi: ExtensionAPI) {
 	});
 }
 
+async function sessionExists(name: string): Promise<boolean> {
+	try {
+		await tmux("has-session", "-t", registry.sessionName(name));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function captureOutput(name: string): Promise<string> {
 	const r = await tmux("capture-pane", "-t", registry.sessionName(name), "-p");
 	const output = r.stdout.trimEnd();
@@ -362,6 +371,18 @@ function scheduleWatch(
 	message?: string,
 ): void {
 	wakeScheduler.scheduleEvery(`watch:${name}`, interval * 1000, async () => {
+		// A watched session can exit on its own (process finished, user killed the
+		// pane). Detect that and terminate the watch once, rather than rejecting on
+		// every tick and spamming failure wakes for a dead session.
+		if (!(await sessionExists(name))) {
+			wakeScheduler.cancel(`watch:${name}`);
+			watchSnapshots.delete(name);
+			registry.remove(name);
+			return {
+				source: `keep_watch ended: ${name}`,
+				content: `The watched session '${name}' is no longer running; the watch has stopped.`,
+			};
+		}
 		const output = await captureOutput(name);
 		const previous = watchSnapshots.get(name);
 		watchSnapshots.set(name, output);
