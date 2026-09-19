@@ -378,10 +378,15 @@ function scheduleWatch(
 			wakeScheduler.cancel(`watch:${name}`);
 			watchSnapshots.delete(name);
 			registry.remove(name);
-			return {
+			// Enqueue under a distinct key after cancelling: scheduleEvery only
+			// enqueues a returned wake while the watch token is current (cancel
+			// clears it), and cancel also drops any pending entry under the watch
+			// key — so the terminal notice must use its own key to survive.
+			wakeScheduler.enqueue(`watch-ended:${name}`, {
 				source: `keep_watch ended: ${name}`,
 				content: `The watched session '${name}' is no longer running; the watch has stopped.`,
-			};
+			});
+			return undefined;
 		}
 		const output = await captureOutput(name);
 		const previous = watchSnapshots.get(name);
