@@ -7,7 +7,22 @@ export interface ScheduledWake {
 }
 
 type Timer = ReturnType<typeof setTimeout>;
-type Producer = () => ScheduledWake | undefined | Promise<ScheduledWake | undefined>;
+
+// A recurring producer may ask the scheduler to stop after this tick. The
+// scheduler performs the final enqueue and self-cancel under the tick's token,
+// so a producer never has to touch cancel/enqueue itself (which would race an
+// in-flight tick against keep_stop or session_shutdown).
+export interface ProducerStop {
+	stop: true;
+	wake?: ScheduledWake;
+}
+
+type ProducerResult = ScheduledWake | ProducerStop | undefined;
+type Producer = () => ProducerResult | Promise<ProducerResult>;
+
+function isProducerStop(result: ProducerResult): result is ProducerStop {
+	return result !== undefined && "stop" in result;
+}
 
 // Node clamps setTimeout delays above the 32-bit signed maximum to ~1 ms, which
 // would turn a large interval into a busy loop. Reject anything past this bound
@@ -41,9 +56,21 @@ export class WakeScheduler {
 		const token = Symbol(key);
 		this.tokens.set(key, token);
 		const tick = async () => {
+			let stop = false;
 			try {
-				const wake = await producer();
-				if (this.tokens.get(key) === token && wake) this.enqueue(key, wake);
+				const result = await producer();
+				// A tick that resumes after cancel/shutdown must not enqueue or
+				// reschedule; the token guard covers both the normal and stop paths.
+				if (this.tokens.get(key) === token) {
+					if (isProducerStop(result)) {
+						stop = true;
+						// Enqueue the terminal wake under a derived key so the cancel below
+						// (which drops the pending entry under `key`) does not discard it.
+						if (result.wake) this.enqueue(`${key}:stopped`, result.wake);
+					} else if (result) {
+						this.enqueue(key, result);
+					}
+				}
 			} catch (error) {
 				if (this.tokens.get(key) === token) {
 					this.enqueue(key, {
@@ -51,6 +78,10 @@ export class WakeScheduler {
 						content: `Scheduled operation failed: ${errorMessage(error)}`,
 					});
 				}
+			}
+			if (stop) {
+				if (this.tokens.get(key) === token) this.cancel(key);
+				return;
 			}
 			if (this.tokens.get(key) === token) {
 				this.timers.set(
@@ -80,9 +111,12 @@ export class WakeScheduler {
 				this.timers.delete(key);
 				void Promise.resolve()
 					.then(producer)
-					.then((wake) => {
+					.then((result) => {
 						if (this.tokens.get(key) !== token) return;
 						this.tokens.delete(key);
+						// scheduleAfter is one-shot; a ProducerStop simply contributes its
+						// optional wake and the schedule ends regardless.
+						const wake = isProducerStop(result) ? result.wake : result;
 						if (wake) this.enqueue(key, wake);
 					})
 					.catch((error: unknown) => {

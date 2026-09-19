@@ -103,6 +103,44 @@ describe("WakeScheduler", () => {
 		expect(sent).toHaveLength(0);
 	});
 
+	it("stop result delivers a final wake and halts rescheduling", async () => {
+		vi.useFakeTimers();
+		const { scheduler, sent } = configuredScheduler(() => true);
+		let ticks = 0;
+		scheduler.scheduleEvery("watch", 1000, () => {
+			ticks += 1;
+			return { stop: true, wake: { source: "watch", content: "ended" } };
+		});
+
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.message.content).toContain("ended");
+
+		// No further ticks after the stop.
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(ticks).toBe(1);
+		expect(scheduler.has("watch")).toBe(false);
+	});
+
+	it("stop result from an in-flight tick after cancel does not deliver", async () => {
+		vi.useFakeTimers();
+		const { scheduler, sent } = configuredScheduler(() => true);
+		let finish:
+			((value: { stop: true; wake: { source: string; content: string } }) => void) | undefined;
+		const produced = new Promise<{ stop: true; wake: { source: string; content: string } }>(
+			(resolve) => {
+				finish = resolve;
+			},
+		);
+		scheduler.scheduleEvery("watch", 1000, () => produced);
+		await vi.advanceTimersByTimeAsync(1000);
+		scheduler.cancel("watch");
+		finish?.({ stop: true, wake: { source: "watch", content: "ended" } });
+		await Promise.resolve();
+
+		expect(sent).toHaveLength(0);
+	});
+
 	it("shutdown cancels every timer and pending event", async () => {
 		vi.useFakeTimers();
 		const { scheduler, sent } = configuredScheduler(() => true);

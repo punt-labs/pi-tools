@@ -375,18 +375,19 @@ function scheduleWatch(
 		// pane). Detect that and terminate the watch once, rather than rejecting on
 		// every tick and spamming failure wakes for a dead session.
 		if (!(await sessionExists(name))) {
-			wakeScheduler.cancel(`watch:${name}`);
+			// Ask the scheduler to stop this watch and deliver a final notice. The
+			// scheduler applies the token guard and self-cancel, so an in-flight tick
+			// that resumes after keep_stop or session_shutdown neither enqueues the
+			// notice nor reschedules.
 			watchSnapshots.delete(name);
 			registry.remove(name);
-			// Enqueue under a distinct key after cancelling: scheduleEvery only
-			// enqueues a returned wake while the watch token is current (cancel
-			// clears it), and cancel also drops any pending entry under the watch
-			// key — so the terminal notice must use its own key to survive.
-			wakeScheduler.enqueue(`watch-ended:${name}`, {
-				source: `keep_watch ended: ${name}`,
-				content: `The watched session '${name}' is no longer running; the watch has stopped.`,
-			});
-			return undefined;
+			return {
+				stop: true,
+				wake: {
+					source: `keep_watch ended: ${name}`,
+					content: `The watched session '${name}' is no longer running; the watch has stopped.`,
+				},
+			};
 		}
 		const output = await captureOutput(name);
 		const previous = watchSnapshots.get(name);
