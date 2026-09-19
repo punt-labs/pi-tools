@@ -39,6 +39,19 @@ describe("WakeScheduler", () => {
 		expect(sent[0]?.message.content).not.toContain("first");
 	});
 
+	it("delivers a failure wake when a scheduleAfter producer throws synchronously", async () => {
+		vi.useFakeTimers();
+		const { scheduler, sent } = configuredScheduler(() => true);
+		scheduler.scheduleAfter("build", 1000, () => {
+			throw new Error("boom");
+		});
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.message.content).toContain("boom");
+	});
+
 	it("cancellation prevents a scheduled wake", async () => {
 		vi.useFakeTimers();
 		const { scheduler, sent } = configuredScheduler(() => true);

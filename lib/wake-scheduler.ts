@@ -59,7 +59,8 @@ export class WakeScheduler {
 			key,
 			setTimeout(() => {
 				this.timers.delete(key);
-				void Promise.resolve(producer())
+				void Promise.resolve()
+					.then(producer)
 					.then((wake) => {
 						if (this.tokens.get(key) !== token) return;
 						this.tokens.delete(key);

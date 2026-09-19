@@ -23,9 +23,16 @@ export function parseEvery(raw: string): EverySpec | string {
 	const unit = match[2];
 	const instruction = match[3].trim();
 	const maximumRuns = Number(match[4]);
+	if (!Number.isSafeInteger(amount) || !Number.isSafeInteger(maximumRuns)) {
+		return "Interval and max_times must each be a whole number no larger than 9007199254740991.";
+	}
 	const multiplier = unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000;
+	const intervalMs = amount * multiplier;
+	if (!Number.isSafeInteger(intervalMs)) {
+		return "Interval is too large; choose a smaller value.";
+	}
 	return {
-		intervalMs: amount * multiplier,
+		intervalMs,
 		intervalLabel: `${String(amount)}${unit}`,
 		instruction,
 		maximumRuns,
