@@ -80,7 +80,8 @@ sessions return the latest refreshed snapshot rather than their entire output
 history. `keep_watch` supports `change` (the default), `always`, and `never`
 wake policies. A wake injects the current pane and triggers another agent turn;
 busy turns coalesce to the newest update. A watch whose tmux session exits on
-its own stops automatically and delivers a final notice rather than repeating.
+its own stops automatically and delivers a final notice rather than repeating
+capture failures.
 
 Session names must use 1-64 characters from `A-Z`, `a-z`, `0-9`, `-`, and `_`.
 The name becomes part of the tmux target, so characters such as `:` and `.`

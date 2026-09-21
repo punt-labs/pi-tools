@@ -90,9 +90,10 @@ below. Each is annotated with its current status.
   documented in `README.md` and `docs/SCHEDULING.md`. A name becomes part of a
   tmux target, so this blocks target delimiters such as `:` and `.`.
 - **Done.** Require a registry-owned entry before capture, send, stop, or
-  delayed wake. Every tool and `/keep` path checks `registry.get` first, and
-  because unsafe names never enter the registry, those operations stay confined
-  to owned sessions.
+  delayed wake. Each of those operations checks `registry.get` first (in both
+  the tool and `/keep` forms), and session-creating paths validate the name
+  through `registry.add`, so unsafe names never enter the registry and these
+  operations stay confined to owned sessions.
 - **Done.** Continue sending interactive text with literal tmux input.
   `keep_send` uses literal send-keys and rejects control characters (including
   embedded newlines) so a single call cannot submit extra input.
