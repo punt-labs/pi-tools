@@ -79,7 +79,14 @@ server, or keeping an interactive CLI available across agent turns. Watch
 sessions return the latest refreshed snapshot rather than their entire output
 history. `keep_watch` supports `change` (the default), `always`, and `never`
 wake policies. A wake injects the current pane and triggers another agent turn;
-busy turns coalesce to the newest update.
+busy turns coalesce to the newest update. A watch whose tmux session exits on
+its own stops automatically and delivers a final notice rather than repeating.
+
+Session names must use 1-64 characters from `A-Z`, `a-z`, `0-9`, `-`, and `_`.
+The name becomes part of the tmux target, so characters such as `:` and `.`
+are rejected. `keep_send` delivers exactly one line and rejects control
+characters, including embedded newlines. Watch and delayed-wake intervals must
+be no larger than the Node timer ceiling (about 24.8 days).
 
 ### `/every`
 
@@ -97,7 +104,8 @@ For example:
 
 Use `/every status` to inspect the active schedule and `/every stop` to cancel
 it. Timer ticks that occur while the agent is busy coalesce into one pending
-delivery, and all schedules are cancelled when the Pi session shuts down. See
+delivery, and all schedules are cancelled when the Pi session shuts down. The
+interval must be no larger than the Node timer ceiling (about 24.8 days). See
 [`docs/SCHEDULING.md`](docs/SCHEDULING.md) for delivery semantics and complete
 PR, Biff, and Vox examples.
 

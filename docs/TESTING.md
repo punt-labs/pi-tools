@@ -23,14 +23,19 @@ external integration tiers.
 Unit tests live in `tests/` and cover pure logic in `lib/`:
 
 - `registry.test.ts` — add, remove, has, list, duplicate rejection,
-  session name prefixing
+  session name prefixing, and safe-name validation (accepted characters,
+  rejection of tmux target delimiters, whitespace, empty, and over-length
+  names, and rejection before registration)
 - `format.test.ts` — time formatting, entry formatting, list
   formatting with fixed timestamps
 - `keep.test.ts` — argument parsing for two-arg and three-arg
   patterns
 - `tmux-wait.test.ts` — exact command framing and prompt completion
 - `wake-scheduler.test.ts` — one-shot delivery, busy-event coalescing,
-  cancellation, in-flight cancellation, and shutdown
+  cancellation, in-flight cancellation, shutdown, schedulable-delay bounds,
+  out-of-range rejection, and the stop protocol (final wake delivered and
+  rescheduling halted, and no delivery when an in-flight stop resumes after
+  cancellation)
 - `keep-watch.test.ts` — first, changed, always, and never wake policies
 - `every.test.ts` — bounded `/every` parsing for seconds, minutes, hours,
   arbitrary instructions, and invalid syntax

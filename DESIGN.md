@@ -81,14 +81,30 @@ permissions on its local socket.
 
 ### ADR-002 Required hardening
 
-Before treating the implementation as complete, `keep` must:
+Before treating the implementation as complete, `keep` must satisfy the items
+below. Each is annotated with its current status.
 
-- restrict names to a small, documented safe character set and length
-- require a registry-owned entry before capture, send, stop, or delayed wake
-- continue sending interactive text with literal tmux input
-- truncate model-bound output and identify it as untrusted command output
-- cancel timers and pending events before terminating a session
-- avoid claiming that tmux provides process or privilege isolation
+- **Done.** Restrict names to a small, documented safe character set and
+  length. `registry.isValidName` enforces `A-Za-z0-9_-`, 1-64 characters, and
+  `registry.add` rejects any other name before registration; the set is
+  documented in `README.md` and `docs/SCHEDULING.md`. A name becomes part of a
+  tmux target, so this blocks target delimiters such as `:` and `.`.
+- **Done.** Require a registry-owned entry before capture, send, stop, or
+  delayed wake. Every tool and `/keep` path checks `registry.get` first, and
+  because unsafe names never enter the registry, those operations stay confined
+  to owned sessions.
+- **Done.** Continue sending interactive text with literal tmux input.
+  `keep_send` uses literal send-keys and rejects control characters (including
+  embedded newlines) so a single call cannot submit extra input.
+- **Open.** Truncate model-bound output and identify it as untrusted command
+  output.
+- **Done.** Cancel timers and pending events before terminating a session.
+  `keep_stop` and `session_shutdown` cancel timers and pending events, and a
+  watch whose tmux session exits on its own terminates through a token-guarded
+  scheduler stop rather than repeating failures.
+- **Done.** Avoid claiming that tmux provides process or privilege isolation.
+  The consequences above and this ADR state the same-user threat model
+  explicitly.
 
 A dedicated tmux socket namespace may reduce accidental interaction with a
 user's ordinary tmux sessions. It does not protect against the same Unix user
