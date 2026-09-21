@@ -47,7 +47,14 @@ Wake policies:
 - `never` only refreshes the tmux pane. Use `keep_capture` to inspect it.
 
 `keep_stop` cancels the watch timer and any pending event before terminating
-tmux. `keep_after` provides a one-shot alternative for a long-running process:
+tmux. A watch also stops on its own when its tmux session exits outside
+`keep_stop` (its process finished or the pane was killed): the next sample
+detects the missing session, cancels the schedule, drops its snapshot and
+registry entry, and delivers one final notice that the watch has stopped. This
+replaces what would otherwise be a repeating capture failure for a dead
+session.
+
+`keep_after` provides a one-shot alternative for a long-running process:
 
 ```text
 keep_after(
@@ -59,6 +66,13 @@ keep_after(
 
 Scheduling another `keep_after` for the same name replaces the previous timer.
 
+Watch and delayed-wake intervals must fall within the Node timer range, from 1
+millisecond to 2,147,483,647 milliseconds (about 24.8 days). A larger value is
+rejected rather than silently clamped, which would otherwise collapse into a
+busy loop. Session names are restricted to 1-64 characters from `A-Z`, `a-z`,
+`0-9`, `-`, and `_`; because a name becomes part of the tmux target, delimiters
+such as `:` and `.` are rejected so a watch cannot address another session.
+
 ## Repeating LLM instructions
 
 The `/every` command schedules a bounded arbitrary instruction:
@@ -67,9 +81,10 @@ The `/every` command schedules a bounded arbitrary instruction:
 /every <time> <LLM command> <max_times>
 ```
 
-`<time>` is a positive integer followed by `s`, `m`, or `h`. The final positive
-integer is required and limits delivered instructions. Everything between the
-time and final integer is the instruction.
+`<time>` is a positive integer followed by `s`, `m`, or `h`. The resulting
+interval must fall within the Node timer range (up to about 24.8 days); a larger
+value is rejected. The final positive integer is required and limits delivered
+instructions. Everything between the time and final integer is the instruction.
 
 Examples:
 
