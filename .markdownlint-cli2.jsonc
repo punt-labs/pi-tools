@@ -1,0 +1,6 @@
+{
+	// .punt-labs/punt/ holds the tracker guide deposited by punt-kit and edited
+	// there, never here, so its markdown is not this repo's to lint. Scope the
+	// ignore to that subtree so any other .punt-labs/ markdown is still linted.
+	"ignores": [".punt-labs/punt/"],
+}

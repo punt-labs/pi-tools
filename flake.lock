@@ -8,16 +8,16 @@
       },
       "locked": {
         "lastModified": 1786202807,
-        "narHash": "sha256-p9DHSJKtBKvl7en+ZDNsxWibpCl1Nd7XhA7cvTEp3Ec=",
+        "narHash": "sha256-GgQVcSPLDv2tVij30/6jFfLZlQ9LugC5SL1ROBj3e9I=",
         "owner": "punt-labs",
         "repo": "beads",
-        "rev": "be6b7cb42c01dfe4c1fe244715865d4dd83eb327",
+        "rev": "769f8a1fce0aa8b9c2c3eef2970918e0fc105a45",
         "type": "github"
       },
       "original": {
         "owner": "punt-labs",
         "repo": "beads",
-        "rev": "be6b7cb42c01dfe4c1fe244715865d4dd83eb327",
+        "rev": "769f8a1fce0aa8b9c2c3eef2970918e0fc105a45",
         "type": "github"
       }
     },

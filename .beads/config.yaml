@@ -1,3 +1,15 @@
+# Issue prefix for this repository. It is also set in .beads/metadata.json;
+# bd reads one `issue-prefix` key: the BD_ISSUE_PREFIX environment variable
+# when set, else this value, else the metadata.json value copied in at
+# startup. `bd create` and the prefix a pull assigns to new beads read this
+# key; nothing checks that the two files agree, so keep them equal. A by-id
+# pull is the exception: `bd linear sync --pull --issues` reads the shared DB
+# `issue_prefix` row (which is `punt-labs`), so pass it PL ids, not bead ids.
+# `linear.pull_label` keeps a pull inside this repo's Linear issues; Linear is
+# the tracker of record (see .punt-labs/punt/CLAUDE.md).
+issue-prefix: pit
+linear.pull_label: repo:pit
+
 directory:
   labels:
     pi-tools: repo:pit
