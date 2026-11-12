@@ -4,8 +4,9 @@ Linear is the tracker of record for pi-tools: the Punt Labs team (key
 `PL`), issues labelled `repo:pit`. **bd** (beads) is a read-mostly local
 mirror of those issues in the punt-labs central Hosted DoltDB instance.
 There is **no per-repo issue store** — all beads live in one shared
-database, distinguished by `issue_prefix` set in `.beads/metadata.json`.
-The operating rules are in `.punt-labs/punt/CLAUDE.md`.
+database, distinguished by this repo's `issue-prefix` (set in
+`.beads/config.yaml`, mirrored in `.beads/metadata.json`). The operating
+rules are in `.punt-labs/punt/CLAUDE.md`.
 
 ## Source of truth
 
@@ -16,8 +17,12 @@ The operating rules are in `.punt-labs/punt/CLAUDE.md`.
   `issue_prefix`.
 - `.beads/config.yaml` scopes `bd linear sync --pull` to this repo:
   `linear.pull_label` selects the issues, and `issue-prefix` names the
-  beads a pull creates. `bd` reads one prefix key, this one when set and
-  the `metadata.json` value as the fallback, so keep the two equal.
+  beads a pull creates. For the prefix, `bd` reads the `BD_ISSUE_PREFIX`
+  environment variable when set, else this `issue-prefix`, else the
+  `metadata.json` value; keep the two files equal. A by-id pull is the
+  exception: `bd linear sync --pull --issues` reads the shared DB
+  `issue_prefix` row (which is `punt-labs`), so pass it PL ids, not bead
+  ids.
 - `.beads/issues.jsonl` and `.beads/interactions.jsonl` are local
   export views. Auto-export is disabled (`export.auto: false`);
   run `bd export` manually if needed. They are **gitignored** and
@@ -52,9 +57,9 @@ no pull removes one: a blocker added in Linear also needs `bd dep add
 and a blocker cleared in Linear needs `bd dep remove <bead> <blocker>`.
 Epics are Linear projects; this repo has none yet, and when one is created
 its epic bead stays in the mirror as the project's marker. The guide's
-"Never" list applies here in full: no bare `bd linear sync`, no
-`bd config set linear.*` (shared by every repo), and never remove
-`issue-prefix` or `linear.pull_label` from `config.yaml`. A pull is a beads
+"Never" list applies here in full: no bare `bd linear sync`, no unscoped
+`--push`, no `bd config set linear.*` (shared by every repo), and never
+remove `issue-prefix` or `linear.pull_label` from `config.yaml`. A pull is a beads
 write: before running one, `bd config get linear.pull_label` on the main
 checkout must print `repo:pit`, or the pull imports the whole Punt Labs
 team.
@@ -66,11 +71,9 @@ This repo needs `bd` built from the punt-labs fork, branch
 Build it from the meta-repo with `.bin/install-bd.sh install`, which
 clones the fork into `.tmp/beads-fork/` and installs `~/.local/bin/bd`.
 
-The Nix dev shell (`flake.nix`) pins the fork at `be6b7cb`, which is
-before punt-labs/beads#7, so the `bd` it provides ignores
-`linear.pull_label`. Run every `bd linear sync` with the
-`.bin/install-bd.sh` build, not the dev-shell one, until the flake input
-is bumped to `769f8a1` or later.
+The Nix dev shell (`flake.nix`) pins the fork at `769f8a1` (punt-labs/beads#8),
+so the `bd` it provides honours `linear.pull_label`. Either `bd` — the dev
+shell's or the `.bin/install-bd.sh` build — is safe for `bd linear sync`.
 
 Upstream `bd` and fork builds before punt-labs/beads#7 ignore
 `linear.pull_label`, so their `bd linear sync --pull` turns other repos'

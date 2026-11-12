@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "nixpkgs/nixpkgs-unstable";
-    beads.url = "github:punt-labs/beads/be6b7cb42c01dfe4c1fe244715865d4dd83eb327";
+    beads.url = "github:punt-labs/beads/769f8a1fce0aa8b9c2c3eef2970918e0fc105a45";
     beads.inputs.nixpkgs.follows = "nixpkgs";
   };
 
