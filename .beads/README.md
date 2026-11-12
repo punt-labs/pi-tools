@@ -39,8 +39,16 @@ Connection details (host, user, password, TLS) come from this repo's
 ## Daily commands
 
 ```bash
+bd config get linear.pull_label
+                      # must print repo:pit, and bd must be the #8 build
+                      # (see "bd version" below); an older build ignores the
+                      # label and imports the whole PL team
 bd linear sync --pull-if-stale --relations --team c1dfbb2c-985e-40cf-b004-5127646efc9d
-                      # refresh the mirror from Linear (needs LINEAR_API_KEY)
+                      # refresh the mirror from Linear (needs LINEAR_API_KEY).
+                      # bd prime may auto-pull WITHOUT --relations first and
+                      # advance the clock, so this can skip the fresh pull and
+                      # miss a new blocker; force it with a by-id pull, or drop
+                      # --pull-if-stale, after a bd prime
 bd list --label-any repo:pit
                       # issues for THIS repo (the shared DB holds every repo)
 bd ready --label-any repo:pit --exclude-label deferred
@@ -60,9 +68,9 @@ its epic bead stays in the mirror as the project's marker. The guide's
 "Never" list applies here in full: no bare `bd linear sync`, no unscoped
 `--push`, no `bd config set linear.*` (shared by every repo), and never
 remove `issue-prefix` or `linear.pull_label` from `config.yaml`. A pull is a beads
-write: before running one, `bd config get linear.pull_label` on the main
-checkout must print `repo:pit`, or the pull imports the whole Punt Labs
-team.
+write: `bd` reads the `config.yaml` of the checkout it runs in, so before
+running one, `bd config get linear.pull_label` there must print `repo:pit`,
+or the pull imports the whole Punt Labs team.
 
 ## bd version
 
@@ -73,15 +81,17 @@ clones the fork into `.tmp/beads-fork/` and installs `~/.local/bin/bd`.
 
 The Nix dev shell (`flake.nix`) pins the fork at `769f8a1` (punt-labs/beads#8),
 so the `bd` it provides honours `linear.pull_label`. Either `bd` — the dev
-shell's or the `.bin/install-bd.sh` build — is safe for `bd linear sync`.
+shell's or the `.bin/install-bd.sh` build — is safe for `bd linear sync`. The
+two are verified differently: the Nix build prints no commit in `bd version`
+(it reports `1.0.4 (dev)`), so confirm its revision through `flake.lock` — the
+`beads` node's `rev` must be `769f8a1…` or later. For the `.bin/install-bd.sh`
+build, take the commit `bd version` prints and confirm it is at or after
+`769f8a1` with `git merge-base --is-ancestor 769f8a1 <that commit>` in the
+fork clone (`.tmp/beads-fork/`); if it is not, rebuild.
 
 Upstream `bd` and fork builds before punt-labs/beads#7 ignore
 `linear.pull_label`, so their `bd linear sync --pull` turns other repos'
-Linear issues into `pit-*` beads; builds from #7 up to #8 honour the
-label but let a bulk pull refresh other repos' linked beads. Before
-pulling, take the commit `bd version` prints (the branch name beside it is
-the current directory's, not the fork's) and confirm it is at or after
-`769f8a1` with `git merge-base --is-ancestor 769f8a1 <that commit>` in
-the fork clone; if it is not, rebuild.
+Linear issues into `pit-*` beads; builds from #7 up to #8 honour the label
+but let a bulk pull refresh other repos' linked beads.
 
 Upstream bd: <https://github.com/gastownhall/beads>
