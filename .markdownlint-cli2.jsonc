@@ -1,0 +1,5 @@
+{
+	// .punt-labs/punt/CLAUDE.md is deposited by punt-kit and edited there, never
+	// here, so its markdown is not this repo's to lint.
+	"ignores": [".punt-labs/"],
+}
