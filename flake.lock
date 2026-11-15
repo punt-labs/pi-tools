@@ -1,26 +1,5 @@
 {
   "nodes": {
-    "beads": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1786202807,
-        "narHash": "sha256-GgQVcSPLDv2tVij30/6jFfLZlQ9LugC5SL1ROBj3e9I=",
-        "owner": "punt-labs",
-        "repo": "beads",
-        "rev": "769f8a1fce0aa8b9c2c3eef2970918e0fc105a45",
-        "type": "github"
-      },
-      "original": {
-        "owner": "punt-labs",
-        "repo": "beads",
-        "rev": "769f8a1fce0aa8b9c2c3eef2970918e0fc105a45",
-        "type": "github"
-      }
-    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1785975029,
@@ -37,7 +16,6 @@
     },
     "root": {
       "inputs": {
-        "beads": "beads",
         "nixpkgs": "nixpkgs"
       }
     }
