@@ -3,11 +3,9 @@
 
   inputs = {
     nixpkgs.url = "nixpkgs/nixpkgs-unstable";
-    beads.url = "github:punt-labs/beads/769f8a1fce0aa8b9c2c3eef2970918e0fc105a45";
-    beads.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, beads }:
+  outputs = { self, nixpkgs }:
     let
       supportedSystems = [
         "aarch64-darwin"
@@ -22,7 +20,6 @@
       devShells = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          bd = beads.packages.${system}.default;
         in
         {
           default = pkgs.mkShell {
@@ -30,7 +27,6 @@
 
             packages = with pkgs; [
               bashInteractive
-              bd
               coreutils
               curl
               direnv
@@ -47,7 +43,7 @@
 
             shellHook = ''
               export PI_TOOLS_NIX_SHELL=1
-              echo "pi-tools dev shell: Node $(${pkgs.nodejs_24}/bin/node --version), bd $(${bd}/bin/bd --version)"
+              echo "pi-tools dev shell: Node $(${pkgs.nodejs_24}/bin/node --version)"
             '';
           };
         });

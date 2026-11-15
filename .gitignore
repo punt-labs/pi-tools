@@ -174,3 +174,6 @@ timeline.xctimeline
 # Add repo-specific entries below this line. The rollout script preserves
 # everything from here down; everything above is regenerated from the canonical
 # template.
+
+# Ignore any leftover local beads runtime state (tracker retired)
+.beads/
