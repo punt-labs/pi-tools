@@ -121,6 +121,15 @@ footer.
 Install and authenticate Biff before enabling this extension. See the
 [Biff installation instructions](https://github.com/punt-labs/biff#quick-start).
 
+Biff reads its relay and team settings from the git repository it starts in
+(`.punt-labs/biff/config.local.yaml`). The bridge starts Biff in Pi's working
+directory unless `BIFF_CWD` names another directory. Set it to use one
+repository's configuration from every Pi session:
+
+```bash
+export BIFF_CWD=~/Coding/punt-labs
+```
+
 | Tools | Purpose |
 | --- | --- |
 | `biff_who`, `biff_finger` | Inspect current presence |

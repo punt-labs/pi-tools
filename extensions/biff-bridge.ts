@@ -10,6 +10,14 @@ const KEEP_SESSION = `keep-biff-bridge-${String(process.pid)}`;
 const BIFF_TTY = `pi-${String(process.pid)}`;
 const BIFF_PROMPT = /▶\s*$/;
 const POLL_INTERVAL_MS = 15_000;
+// Biff reads its relay and team settings from the git repo it is started in
+// (`.punt-labs/biff/config.local.yaml`). By default that is Pi's working
+// directory; BIFF_CWD pins the REPL to one repo's config instead, so every Pi
+// session joins the same relay no matter where Pi was launched.
+const BIFF_CWD = (() => {
+	const value = process.env.BIFF_CWD?.trim();
+	return value === undefined || value === "" ? undefined : value; // empty = unset
+})();
 const STARTUP_TIMEOUT_MS = 15_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -63,7 +71,8 @@ async function ensureBiffRepl(): Promise<string | null> {
 		// session does not exist, start it
 	}
 	try {
-		await tmux("new-session", "-d", "-s", KEEP_SESSION, "biff");
+		const cwdArgs = BIFF_CWD ? ["-c", BIFF_CWD] : [];
+		await tmux("new-session", "-d", "-s", KEEP_SESSION, ...cwdArgs, "biff");
 		// wait for initial REPL startup and prompt
 		const deadline = Date.now() + STARTUP_TIMEOUT_MS;
 		while (Date.now() < deadline) {
