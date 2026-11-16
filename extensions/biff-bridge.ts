@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { capturePane, sendAndWait } from "../lib/tmux-wait.js";
+import { biffLine, checkToken, flattenText } from "../lib/biff-args.js";
 import { wakeScheduler } from "../lib/wake-scheduler.js";
 
 const exec = promisify(execFile);
@@ -57,10 +58,32 @@ async function restartOwnedRepl(): Promise<void> {
 			}
 			if (await tmuxSessionExists()) await tmux("kill-session", "-t", KEEP_SESSION);
 		}
+		// ensureBiffRepl recreates the session under BIFF_TTY, so no `tty` rename.
 		const startupError = await ensureBiffRepl();
 		if (startupError) throw new Error(startupError);
-		return sendAndWait(KEEP_SESSION, "tty " + BIFF_TTY, BIFF_PROMPT);
 	});
+}
+
+// A bare `biff` attaches to the session this repo's pointer names, so two
+// bridges (or a bridge and a test peer) in one repo shared one session, and
+// each restart reused an old one: `who` then listed stale ttys, and messages to
+// a peer landed in the shared mailbox instead of its session. The bridge now
+// owns its session outright: end any leftover with our name, create a fresh
+// one, and attach to it (`biff session end` again at shutdown).
+function ownedSessionCommand(): string {
+	return (
+		`biff session end ${BIFF_TTY} >/dev/null 2>&1; ` +
+		`biff session new --tty ${BIFF_TTY} >/dev/null && exec biff --session ${BIFF_TTY}`
+	);
+}
+
+async function endOwnedSession(): Promise<void> {
+	try {
+		const cwd = BIFF_CWD ? { cwd: BIFF_CWD } : {};
+		await exec("biff", ["session", "end", BIFF_TTY], { ...cwd, timeout: 10_000 });
+	} catch {
+		// Already ended, or never created: nothing to clean up.
+	}
 }
 
 async function ensureBiffRepl(): Promise<string | null> {
@@ -72,7 +95,7 @@ async function ensureBiffRepl(): Promise<string | null> {
 	}
 	try {
 		const cwdArgs = BIFF_CWD ? ["-c", BIFF_CWD] : [];
-		await tmux("new-session", "-d", "-s", KEEP_SESSION, ...cwdArgs, "biff");
+		await tmux("new-session", "-d", "-s", KEEP_SESSION, ...cwdArgs, ownedSessionCommand());
 		// wait for initial REPL startup and prompt
 		const deadline = Date.now() + STARTUP_TIMEOUT_MS;
 		while (Date.now() < deadline) {
@@ -122,14 +145,17 @@ function errorMessage(error: unknown): string {
 	return String(error);
 }
 
-// Model-controlled strings are sent to the biff REPL via tmux literal input.
-// Literal mode does not neutralize embedded newlines/carriage returns: the
-// terminal still treats them as Enter and would submit extra REPL commands.
-// Reject any control character so a single argument cannot inject commands.
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
-
-function rejectControlChars(value: string, field: string): string | undefined {
-	return CONTROL_CHARS.test(value) ? `${field} must not contain control characters.` : undefined;
+// Model-controlled strings reach the biff REPL as one tmux literal line, and the
+// REPL tokenises most commands with Python shlex. So identifiers must be single
+// plain tokens, and free text is flattened to one line and passed as a single
+// shlex-quoted argument (lib/biff-args.ts). Unquoted, an apostrophe ("Jim's")
+// made biff reply "Parse error: No closing quotation", and a newline was
+// rejected outright.
+function textArg(value: string, field: string): { text: string } | { error: string } {
+	const flat = flattenText(value);
+	if ("error" in flat) return { error: `${field} ${flat.error}.` };
+	if (!flat.text) return { error: `${field} must not be empty.` };
+	return flat;
 }
 
 function paneDelta(before: string, after: string): string {
@@ -238,8 +264,8 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		// Each Pi process owns a distinct biff identity and tmux session.
-		await runBiffCommand("tty " + BIFF_TTY);
+		// Each Pi process owns a distinct biff session (created with BIFF_TTY as its
+		// name by ownedSessionCommand), so no `tty` rename is needed here.
 
 		// If the session shut down while we were starting up, do not install a
 		// poll timer that would outlive this session (session_shutdown already ran
@@ -277,6 +303,9 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			await tmux("kill-session", "-t", KEEP_SESSION);
 		} catch {
 			// The REPL may already have exited.
+		} finally {
+			// End the session so it doesn't linger in `biff who` as a stale tty.
+			await endOwnedSession();
 		}
 	});
 
@@ -328,11 +357,12 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { to: string; message: string };
-			const invalid =
-				rejectControlChars(params.to, "to") ?? rejectControlChars(params.message, "message");
+			const invalid = checkToken(params.to, "to");
 			if (invalid) return result(invalid);
+			const message = textArg(params.message, "message");
+			if ("error" in message) return result(message.error);
 			try {
-				return result(await biffCommand("write " + params.to + " " + params.message));
+				return result(await biffCommand(biffLine("write", params.to.trim(), message.text)));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -356,11 +386,12 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			if (!params.clear && !text) {
 				return result("Provide non-empty text or set clear=true.");
 			}
-			if (text) {
-				const invalid = rejectControlChars(text, "text");
-				if (invalid) return result(invalid);
+			let command = "plan clear";
+			if (!params.clear) {
+				const plan = textArg(text ?? "", "text");
+				if ("error" in plan) return result(plan.error);
+				command = biffLine("plan", plan.text);
 			}
-			const command = params.clear ? "plan clear" : "plan " + (text ?? "");
 			try {
 				return result(await biffCommand(command));
 			} catch (error) {
@@ -382,10 +413,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { user: string };
-			const invalid = rejectControlChars(params.user, "user");
+			const invalid = checkToken(params.user, "user");
 			if (invalid) return result(invalid);
 			try {
-				return result(await biffCommand("finger " + params.user));
+				return result(await biffCommand(biffLine("finger", params.user.trim())));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -423,14 +454,14 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 				params.count === undefined
 					? undefined
 					: Math.min(100, Math.max(1, Math.trunc(params.count)));
-			const count = normalizedCount === undefined ? "" : " --count " + String(normalizedCount);
+			const args = normalizedCount === undefined ? [] : ["--count", String(normalizedCount)];
 			if (params.user) {
-				const invalid = rejectControlChars(params.user, "user");
+				const invalid = checkToken(params.user, "user");
 				if (invalid) return result(invalid);
+				args.push(params.user.trim());
 			}
-			const user = params.user ? " " + params.user : "";
 			try {
-				return result(await biffCommand("last" + count + user));
+				return result(await biffCommand(biffLine("last", ...args)));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -459,14 +490,18 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			let command = "wall";
 			if (params.action === "clear") command = "wall clear";
 			if (params.action === "post") {
-				const message = params.message?.trim();
-				if (!message) return result("A non-empty message is required to post the wall.");
-				const invalid =
-					rejectControlChars(message, "message") ??
-					(params.duration ? rejectControlChars(params.duration, "duration") : undefined);
-				if (invalid) return result(invalid);
-				command = "wall " + message;
-				if (params.duration) command += " " + params.duration;
+				if (!params.message?.trim()) {
+					return result("A non-empty message is required to post the wall.");
+				}
+				const message = textArg(params.message, "message");
+				if ("error" in message) return result(message.error);
+				const args = [message.text];
+				if (params.duration) {
+					const invalid = checkToken(params.duration, "duration");
+					if (invalid) return result(invalid);
+					args.push(params.duration.trim());
+				}
+				command = biffLine("wall", ...args);
 			}
 			try {
 				return result(await biffCommand(command));
@@ -506,10 +541,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { name: string };
-			const invalid = rejectControlChars(params.name, "name");
+			const invalid = checkToken(params.name, "name");
 			if (invalid) return result(invalid);
 			try {
-				return result(await biffCommand("tty " + params.name));
+				return result(await biffCommand(biffLine("tty", params.name.trim())));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -550,14 +585,20 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, rawParams) {
 			if (talkMode !== "idle") return result("A talk session is already active.");
 			const params = rawParams as { to: string; opening?: string };
-			const invalid =
-				rejectControlChars(params.to, "to") ??
-				(params.opening ? rejectControlChars(params.opening, "opening") : undefined);
+			const invalid = checkToken(params.to, "to");
 			if (invalid) return result(invalid);
+			// biff parses "talk" by whitespace, not shlex: quotes would arrive
+			// literally, so the opening is flattened to one line but not quoted.
+			let opening = "";
+			if (params.opening?.trim()) {
+				const flat = textArg(params.opening, "opening");
+				if ("error" in flat) return result(flat.error);
+				opening = flat.text;
+			}
 			// Close the idle gate synchronously, before any await, so a second talk start
 			// or an ordinary biff tool issued in the same turn cannot slip past it.
 			talkMode = "waiting";
-			const command = "talk " + params.to + (params.opening ? " " + params.opening : "");
+			const command = "talk " + params.to.trim() + (opening ? " " + opening : "");
 			try {
 				const { delta, pane } = await sendAndWaitForTalkEvent(command, [
 					"Waiting for ",
@@ -627,12 +668,13 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, rawParams) {
 			if (talkMode !== "connected") return result("Talk is not connected yet.");
 			const params = rawParams as { message: string };
-			const invalid = rejectControlChars(params.message, "message");
-			if (invalid) return result(invalid);
+			// Talk lines are sent exactly as typed (no shlex), so flatten, don't quote.
+			const message = textArg(params.message, "message");
+			if ("error" in message) return result(message.error);
 			try {
 				// Use the pane observed at send completion as the baseline so a peer line
 				// arriving right after our send is not folded into the snapshot and lost.
-				talkSnapshot = await sendTalkLine(params.message);
+				talkSnapshot = await sendTalkLine(message.text);
 				return result("Talk message sent.");
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));

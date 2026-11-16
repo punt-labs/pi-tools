@@ -47,9 +47,17 @@ class RelayFixture {
 		fixtureSequence += 1;
 		const peerSession = `biff-bridge-peer-${String(process.pid)}-${String(fixtureSequence)}`;
 		const peerTty = `peer-${String(process.pid)}-${String(fixtureSequence)}`;
-		await exec("tmux", ["new-session", "-d", "-s", peerSession, "biff"]);
+		// The peer owns its own session too: a bare `biff` would attach to this
+		// repo's pointed session, the same one the bridge would otherwise share.
+		await exec("tmux", [
+			"new-session",
+			"-d",
+			"-s",
+			peerSession,
+			`biff session end ${peerTty} >/dev/null 2>&1; ` +
+				`biff session new --tty ${peerTty} >/dev/null && exec biff --session ${peerTty}`,
+		]);
 		await waitUntil(async () => prompt.test(await capturePane(peerSession)), 15_000);
-		await sendAndWait(peerSession, `tty ${peerTty}`, prompt);
 		const peerStatus = await sendAndWait(peerSession, "status", prompt);
 		const user = /user:\s*(\S+)/.exec(peerStatus)?.[1];
 		if (!user) throw new Error("peer status did not contain a user");
@@ -106,6 +114,8 @@ class RelayFixture {
 		await this.shutdownBridge();
 		await stopPeer(this.peerSession);
 		await killSession(bridgeSession);
+		// Ending the REPL leaves the session record; end it so `who` stays clean.
+		await exec("biff", ["session", "end", this.peerTty]).catch(() => undefined);
 	}
 }
 
@@ -174,6 +184,29 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		}
 		expect(await fixture.tool("biff_wall", { action: "read" })).toContain("No active wall");
 	}, 30_000);
+
+	it("sends messages with quotes and line breaks intact", async () => {
+		fixture = await RelayFixture.start();
+		const activeFixture = fixture;
+		const stamp = String(Date.now());
+		// Apostrophes used to fail with "Parse error: No closing quotation"; a
+		// newline used to be rejected. Both must now arrive intact (one line).
+		const message = `quotes-${stamp}: Jim's OK, it's "done"\nsecond line`;
+		expect(await fixture.tool("biff_write", { to: fixture.peerAddress, message })).toContain(
+			"Message sent",
+		);
+		await waitUntil(
+			async () => /unread:\s*[1-9]\d*/.test(await activeFixture.peer("status")),
+			10_000,
+		);
+		// biff word-wraps the message column, so compare with whitespace collapsed.
+		const read = (await fixture.peer("read")).replace(/\s+/g, " ");
+		expect(read).toContain(`quotes-${stamp}: Jim's OK, it's "done" / second line`);
+		const plan = `plan-${stamp}: it's Jim's`;
+		expect(await fixture.tool("biff_plan", { text: plan })).toContain("Plan:");
+		expect(await fixture.tool("biff_finger", { user: fixture.bridgeAddress })).toContain(plan);
+		await fixture.tool("biff_plan", { clear: true });
+	}, 40_000);
 
 	it("exchanges direct messages and reports unread mail", async () => {
 		fixture = await RelayFixture.start();

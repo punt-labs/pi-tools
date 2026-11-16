@@ -189,7 +189,29 @@ consumption.
 ### ADR-004 Decision
 
 Name the bridge tmux session `keep-biff-bridge-<pid>` and its default Biff TTY
-`pi-<pid>`. Only the creating Pi process may clean up that tmux session. Biff
+`pi-<pid>`.
+
+The bridge **owns** its Biff session rather than attaching to whatever the
+repo's pointer names. A bare `biff` attaches to the repo's pointed session, so
+two bridges (or a bridge and a test peer) in one repo shared one session, and
+each restart reused an old one: `biff who` listed stale TTYs, and messages to
+a peer landed in the shared mailbox. The bridge now ends any leftover session
+named `pi-<pid>`, runs `biff session new --tty pi-<pid>`, attaches with
+`biff --session pi-<pid>`, and runs `biff session end` at shutdown.
+
+### Arguments to the Biff REPL
+
+The REPL tokenises commands with Python `shlex`, so raw text broke on an
+unbalanced quote: an apostrophe ("Jim's") produced `Parse error: No closing
+quotation`. `lib/biff-args.ts` builds every command line:
+
+- identifiers (address, user, TTY, duration) must be one plain token;
+- free text (message, plan, wall post) is flattened to one line (line breaks
+  become ` / `, tabs become spaces) and passed as one `shlex`-quoted argument;
+- `talk` and talk lines aren't `shlex`-parsed by Biff, so their text is
+  flattened but not quoted;
+- other control characters are still rejected, because tmux literal input
+  would turn them into extra keystrokes. Only the creating Pi process may clean up that tmux session. Biff
 remains responsible for relay-side disconnected-session reaping.
 
 ### ADR-004 Consequences

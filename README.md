@@ -144,6 +144,11 @@ export BIFF_CWD=~/Coding/punt-labs
 | `biff_talk_send` | Send a talk line |
 | `biff_talk_end` | Cancel or end a talk |
 
+Each Pi process owns its own Biff session, named `pi-<pid>`: the bridge
+creates it at startup and ends it at shutdown, so stale sessions don't pile up
+in `biff who`. Message, plan and wall text may contain quotes, apostrophes and
+line breaks; line breaks are sent as ` / ` because Biff messages are one line.
+
 The four talk tools adapt Biff's modal BSD-style `talk` interface to discrete
 Pi tool calls. The bridge can initiate or accept an invitation, exchange lines,
 and detect local cancellation or either participant hanging up.
