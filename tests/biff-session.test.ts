@@ -4,7 +4,35 @@ import {
 	endSession,
 	pythonFromShebang,
 	readDefaultSession,
+	withRepoLock,
 } from "../lib/biff-session.js";
+
+describe("withRepoLock", () => {
+	it("serialises overlapping callers in one repository", async () => {
+		const events: string[] = [];
+		const run = (name: string) =>
+			withRepoLock({ cwd: process.cwd() }, async () => {
+				events.push(`${name}+`);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				events.push(`${name}-`);
+			});
+		await Promise.all([run("a"), run("b")]);
+		// Each caller's start and end are adjacent: no interleaving.
+		expect([
+			["a+", "a-", "b+", "b-"],
+			["b+", "b-", "a+", "a-"],
+		]).toContainEqual(events);
+	});
+
+	it("releases the lock when the callback throws", async () => {
+		await expect(
+			withRepoLock({ cwd: process.cwd() }, () => Promise.reject(new Error("boom"))),
+		).rejects.toThrow("boom");
+		expect(await withRepoLock({ cwd: process.cwd() }, () => Promise.resolve("again"))).toBe(
+			"again",
+		);
+	});
+});
 
 describe("pythonFromShebang", () => {
 	it("returns an absolute interpreter path", async () => {

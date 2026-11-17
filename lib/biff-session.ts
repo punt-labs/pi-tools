@@ -7,16 +7,21 @@
 // never lands in the bridge's mailbox. The pointer is read through biff's own
 // module, using the interpreter that runs the installed `biff` command.
 //
-// Known limitation: this is a read, create, restore sequence outside biff, so
-// it can race another process changing the pointer in between. The restore
-// only writes when the pointer still names the bridge's new session, which
-// keeps a newer `biff session use` or another bridge's restore; the remaining
-// window is the moment between that check and the write. Any failure to read
+// Two bridges starting together would otherwise race: B could read A's
+// temporary session as "the previous default" and put it back. The whole
+// read, create, restore sequence therefore holds a per-repository lock that
+// every bridge (and the integration peers) takes. A person running
+// `biff session use` meanwhile doesn't take the lock, so the restore only
+// writes when the pointer still names the bridge's new session; the
+// remaining window is the moment between that check and the write. Any failure to read
 // or restore is reported as a warning rather than ignored. The real fix is a
 // `biff session new` option that leaves the pointer alone (biff issue PL-1137).
 
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -121,6 +126,66 @@ export async function createOwnedSession(
 	opts: BiffSessionOptions,
 	tty: string,
 ): Promise<OwnedSession> {
+	return withRepoLock(opts, () => createUnlocked(opts, tty));
+}
+
+const LOCK_WAIT_MS = 60_000;
+// Longer than any create sequence (relay timeout plus pointer scripts), so a
+// lock this old was left by a process that died mid-sequence.
+const LOCK_STALE_MS = 3 * RELAY_TIMEOUT_MS;
+
+/** Lock directory shared by every bridge working in the same repository. */
+async function repoLockPath(opts: BiffSessionOptions): Promise<string> {
+	let key: string;
+	try {
+		const { stdout } = await exec(
+			"git",
+			["rev-parse", "--path-format=absolute", "--git-common-dir"],
+			{
+				cwd: opts.cwd,
+			},
+		);
+		key = stdout.trim();
+	} catch {
+		key = opts.cwd ?? process.cwd();
+	}
+	const digest = createHash("sha256").update(key).digest("hex").slice(0, 16);
+	return join(tmpdir(), `biff-bridge-session-${digest}.lock`);
+}
+
+/**
+ * Run `fn` holding a per-repository lock (an atomic mkdir). A lock older
+ * than LOCK_STALE_MS is taken over; if the lock can't be had within
+ * LOCK_WAIT_MS, `fn` runs anyway, so a stuck lock costs isolation, not startup.
+ */
+export async function withRepoLock<T>(opts: BiffSessionOptions, fn: () => Promise<T>): Promise<T> {
+	const lock = await repoLockPath(opts);
+	const deadline = Date.now() + LOCK_WAIT_MS;
+	let held = false;
+	while (!held && Date.now() < deadline) {
+		try {
+			await mkdir(lock);
+			held = true;
+		} catch {
+			const created = await stat(lock).then(
+				(info) => info.mtimeMs,
+				() => 0,
+			);
+			if (created > 0 && Date.now() - created > LOCK_STALE_MS) {
+				await rm(lock, { recursive: true, force: true });
+				continue;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		}
+	}
+	try {
+		return await fn();
+	} finally {
+		if (held) await rm(lock, { recursive: true, force: true });
+	}
+}
+
+async function createUnlocked(opts: BiffSessionOptions, tty: string): Promise<OwnedSession> {
 	let previous: string | undefined;
 	let warning: string | undefined;
 	try {
