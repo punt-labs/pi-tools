@@ -1,7 +1,15 @@
-import { execFile } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { capturePane, sendAndWait } from "../lib/tmux-wait.js";
+import { biffLine, checkToken, flattenText } from "../lib/biff-args.js";
+import { findBiffCwd, hasBiffConfig } from "../lib/biff-config.js";
+import { createOwnedSession, endSession } from "../lib/biff-session.js";
+import { formatBiffStatus, parseBiffStatus, type StatusStyle } from "../lib/biff-status.js";
+import { isTalkHangup } from "../lib/biff-talk.js";
 import { wakeScheduler } from "../lib/wake-scheduler.js";
 
 const exec = promisify(execFile);
@@ -10,10 +18,33 @@ const KEEP_SESSION = `keep-biff-bridge-${String(process.pid)}`;
 const BIFF_TTY = `pi-${String(process.pid)}`;
 const BIFF_PROMPT = /▶\s*$/;
 const POLL_INTERVAL_MS = 15_000;
+// Where the biff REPL starts, which decides the relay config it reads
+// (lib/biff-config.ts):
+//   1. BIFF_CWD, when set (explicit choice);
+//   2. else the nearest enclosing git repository root with a .punt-labs/biff
+//      config (this repo, or a workspace repo like ~/Coding/punt-labs);
+//   3. else Pi's working directory, and the user is warned that biff will use
+//      its public demo relay instead of the team's.
+function biffCwdFromEnv(): string | undefined {
+	const value = process.env.BIFF_CWD?.trim() ?? "";
+	return value === "" ? undefined : value; // empty = unset
+}
+
+const BIFF_CWD = biffCwdFromEnv() ?? findBiffCwd(process.cwd());
+
+// Whether biff will fall back to its public demo relay: no config where it
+// starts (an explicit BIFF_CWD is checked too, since it may point at an
+// unconfigured directory), and no BIFF_RELAY_URL override in the environment.
+const ON_DEMO_RELAY =
+	!(BIFF_CWD !== undefined && hasBiffConfig(BIFF_CWD)) &&
+	(process.env.BIFF_RELAY_URL?.trim() ?? "") === "";
 const STARTUP_TIMEOUT_MS = 15_000;
+const SHUTDOWN_WAIT_MS = 5_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let lastUnreadNotified = 0;
+// `status` doesn't report it, so track `biff mesg` from the bridge's own tool.
+let mesgOn = true;
 // Bumped on every session_shutdown. A poll captures the generation before it
 // awaits `status`; if it changes while awaiting, the session has ended and the
 // poll must not enqueue a wake or touch the UI of a replacement session.
@@ -49,32 +80,128 @@ async function restartOwnedRepl(): Promise<void> {
 			}
 			if (await tmuxSessionExists()) await tmux("kill-session", "-t", KEEP_SESSION);
 		}
+		// Reattaches to the session we already own (ownedSessionId is kept).
 		const startupError = await ensureBiffRepl();
 		if (startupError) throw new Error(startupError);
-		return sendAndWait(KEEP_SESSION, "tty " + BIFF_TTY, BIFF_PROMPT);
 	});
 }
 
+// The bridge owns its Biff session: created fresh at startup (lib/biff-session),
+// attached by its stable id, and ended at shutdown. Using the id rather than
+// the `pi-<pid>` name keeps reattach and shutdown working after `biff_tty`
+// renames the session. A bare `biff` would instead attach to the repository's
+// default session, shared with anyone else running biff in that repository.
+let ownedSessionId = "";
+// Set when the repository's default session couldn't be put back; shown once.
+let sessionWarning: string | undefined;
+
+// Serialises session ownership with shutdown, so a startup that is still
+// creating the session can't leave one behind after shutdown has run.
+let lifecycle: Promise<void> = Promise.resolve();
+let shuttingDown = false;
+// A function, not a direct read, because the flag changes while startup awaits
+// the relay; reading it through a call keeps that visible to the type checker.
+function isShuttingDown(): boolean {
+	return shuttingDown;
+}
+
+function biffOpts(): { cwd: string | undefined } {
+	return { cwd: BIFF_CWD };
+}
+
+// Clears the id only once biff has ended the session, so a failure (relay
+// down) keeps it for a later retry instead of losing the only handle on a
+// session that may since have been renamed.
+async function endOwnedSession(): Promise<void> {
+	const id = ownedSessionId;
+	if (!id) return;
+	await endSession(biffOpts(), id);
+	if (ownedSessionId === id) ownedSessionId = "";
+}
+
+// Start the REPL attached to the owned session, creating the session first if
+// the bridge doesn't own one yet. The relay round trips happen before the
+// prompt wait starts, so a slow relay can't eat into the REPL's startup time.
 async function ensureBiffRepl(): Promise<string | null> {
+	if (await tmuxSessionExists()) return null;
+	if (isShuttingDown()) return "the Pi session is shutting down";
 	try {
-		await tmux("has-session", "-t", KEEP_SESSION);
-		return null;
-	} catch {
-		// session does not exist, start it
-	}
-	try {
-		await tmux("new-session", "-d", "-s", KEEP_SESSION, "biff");
-		// wait for initial REPL startup and prompt
+		if (!ownedSessionId) {
+			const owned = await createOwnedSession(biffOpts(), BIFF_TTY);
+			ownedSessionId = owned.id;
+			sessionWarning = owned.warning;
+		}
+		if (isShuttingDown()) {
+			await endOwnedSession();
+			return "the Pi session is shutting down";
+		}
+		// biff's stderr goes to a log file as well as the pane, so if it exits
+		// (the tmux session then disappears) its own error can still be reported.
+		// The session ends when biff exits, so a dead REPL is never mistaken for a
+		// live one and the next command starts a fresh one.
+		const cwdArgs = BIFF_CWD ? ["-c", BIFF_CWD] : [];
+		// Paths and the id go in as arguments ($1, $2), not into the script, so
+		// no quoting is needed. Closing stderr and waiting for tee means the log
+		// is complete by the time bash, and with it the tmux session, has gone.
+		const script =
+			'exec 2> >(tee "$1" >&2); tee_pid=$!; biff --session "$2"; status=$?; ' +
+			"exec 2>&-; wait $tee_pid; exit $status";
+		const log = await startupLogPath();
+		await rm(log, { force: true });
+		// Shutdown may have started during those awaits; don't launch a REPL
+		// that nothing would then stop.
+		if (isShuttingDown()) return "the Pi session is shutting down";
+		await tmux(
+			"new-session",
+			"-d",
+			"-s",
+			KEEP_SESSION,
+			...cwdArgs,
+			"bash",
+			"-c",
+			script,
+			"biff-bridge",
+			log,
+			ownedSessionId,
+		);
 		const deadline = Date.now() + STARTUP_TIMEOUT_MS;
 		while (Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 300));
-			const r = await tmux("capture-pane", "-t", KEEP_SESSION, "-p");
-			if (BIFF_PROMPT.test(r.stdout)) return null;
+			if (!(await tmuxSessionExists())) {
+				return "biff exited: " + (await startupError());
+			}
+			const pane = await capturePane(KEEP_SESSION).catch(() => "");
+			if (BIFF_PROMPT.test(pane)) return null;
 		}
-		return "biff REPL did not show prompt within 15s";
+		await tmux("kill-session", "-t", KEEP_SESSION).catch(() => undefined);
+		return `biff REPL did not show prompt within ${String(STARTUP_TIMEOUT_MS / 1000)}s`;
 	} catch (error) {
 		return error instanceof Error ? error.message : String(error);
 	}
+}
+
+// The startup log lives in a private directory (mkdtemp, mode 0700), so no
+// other local user can plant a symlink at its path for tee to follow.
+// One promise, assigned synchronously, so overlapping starts share a single
+// directory rather than each creating one and overwriting the other's path.
+let startupLogDir: Promise<string> | undefined;
+async function startupLogPath(): Promise<string> {
+	startupLogDir ??= mkdtemp(join(tmpdir(), "biff-bridge-"));
+	return join(await startupLogDir, "startup.log");
+}
+async function removeStartupLog(): Promise<void> {
+	const dir = startupLogDir;
+	startupLogDir = undefined;
+	if (dir) await rm(await dir, { recursive: true, force: true }).catch(() => undefined);
+}
+
+async function startupError(): Promise<string> {
+	const text = startupLogDir ? await readFile(await startupLogPath(), "utf8").catch(() => "") : "";
+	return lastLines(text) || "no error output";
+}
+
+function lastLines(text: string): string {
+	return text.trim().split("\n").slice(-3).join(" / ");
 }
 
 function enqueueCommand<T>(operation: () => Promise<T>): Promise<T> {
@@ -113,14 +240,17 @@ function errorMessage(error: unknown): string {
 	return String(error);
 }
 
-// Model-controlled strings are sent to the biff REPL via tmux literal input.
-// Literal mode does not neutralize embedded newlines/carriage returns: the
-// terminal still treats them as Enter and would submit extra REPL commands.
-// Reject any control character so a single argument cannot inject commands.
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
-
-function rejectControlChars(value: string, field: string): string | undefined {
-	return CONTROL_CHARS.test(value) ? `${field} must not contain control characters.` : undefined;
+// Model-controlled strings reach the biff REPL as one tmux literal line, and the
+// REPL tokenises most commands with Python shlex. So identifiers must be single
+// plain tokens, and free text is flattened to one line and passed as a single
+// shlex-quoted argument (lib/biff-args.ts). Unquoted, an apostrophe ("Jim's")
+// made biff reply "Parse error: No closing quotation", and a newline was
+// rejected outright.
+function textArg(value: string, field: string): { text: string } | { error: string } {
+	const flat = flattenText(value);
+	if ("error" in flat) return { error: `${field} ${flat.error}.` };
+	if (!flat.text) return { error: `${field} must not be empty.` };
+	return flat;
 }
 
 function paneDelta(before: string, after: string): string {
@@ -128,10 +258,6 @@ function paneDelta(before: string, after: string): string {
 	const limit = Math.min(before.length, after.length);
 	while (shared < limit && before[shared] === after[shared]) shared += 1;
 	return after.slice(shared).trim();
-}
-
-function isTalkHangup(text: string): boolean {
-	return text.includes("Talk with ") && (text.includes(" ended.") || text.includes(" cancelled."));
 }
 
 function updateTalkMode(text: string): void {
@@ -212,6 +338,66 @@ async function sendTalkLine(message: string): Promise<string> {
 	});
 }
 
+// How long the reaper keeps trying: longer than a worst-case startup (60 s
+// lock wait plus several 10-20 s biff calls), so a session created late is
+// still ended.
+const REAPER_WINDOW_S = 300;
+const REAPER_INTERVAL_S = 15;
+
+// The pending reaper, while Pi is still running. Cancelled once the session
+// has really been ended in-process, or when a new session starts, so it can
+// never end a later session that reuses this process's name.
+let reaper: ChildProcess | undefined;
+
+function cancelReaper(): void {
+	reaper?.kill();
+	reaper = undefined;
+}
+
+// A reaper left by an earlier Pi with this same process id (ids get reused)
+// targets this process's names, and would end this bridge's session. Stop it
+// before starting: this startup ends any leftover `pi-<pid>` session itself,
+// which is all that reaper was for. Matched on its command line, which
+// carries the tmux name (unique to this pid) right after the window and
+// interval arguments.
+async function cancelStaleReapers(): Promise<void> {
+	const pattern = `biff-bridge-reaper [0-9]+ [0-9]+ ${KEEP_SESSION} `;
+	await exec("pkill", ["-f", pattern]).catch(() => undefined);
+}
+
+// Detached, so it outlives Pi. Every REAPER_INTERVAL_S for REAPER_WINDOW_S it
+// kills the tmux REPL and tries to end the session. Retrying covers a session
+// created after Pi exits (a still-running `biff session new`) and a relay
+// that's briefly down.
+//
+// With the session's id it stops once that session is ended. With only the
+// `pi-<pid>` name (startup hadn't created it yet), ending some session by
+// that name proves nothing: it may be an older leftover. So it keeps going
+// for the whole window, ending whatever live session holds the name.
+function spawnShutdownReaper(): void {
+	const script =
+		'end=$(( $(date +%s) + $1 )); while [ "$(date +%s)" -lt "$end" ]; do ' +
+		'sleep "$2"; tmux kill-session -t "$3" 2>/dev/null; ' +
+		'biff session end "$4" >/dev/null 2>&1 && [ "$5" = id ] && exit 0; done';
+	const ref = ownedSessionId || BIFF_TTY;
+	const child = spawn(
+		"sh",
+		[
+			"-c",
+			script,
+			"biff-bridge-reaper",
+			String(REAPER_WINDOW_S),
+			String(REAPER_INTERVAL_S),
+			KEEP_SESSION,
+			ref,
+			ownedSessionId ? "id" : "name",
+		],
+		{ cwd: BIFF_CWD, detached: true, stdio: "ignore" },
+	);
+	child.unref();
+	reaper = child;
+}
+
 export default function biffBridgeExtension(pi: ExtensionAPI) {
 	pi.on("agent_settled", () => wakeScheduler.flush());
 	pi.on("session_start", async (_event, ctx) => {
@@ -222,29 +408,59 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		const generation = sessionGeneration;
 		// A fresh Pi session must re-announce any standing unread mail, so clear the
 		// baseline that suppresses duplicate notifications within a single session.
+		cancelReaper();
 		lastUnreadNotified = 0;
-		const err = await ensureBiffRepl();
+		mesgOn = true;
+		shuttingDown = false;
+		const start = lifecycle.then(async () => {
+			await cancelStaleReapers();
+			const startError = await ensureBiffRepl();
+			// A failed start must not leave a live session behind in `biff who`.
+			if (!startError) return startError;
+			try {
+				await endOwnedSession();
+				return startError;
+			} catch (error) {
+				return `${startError}; ${errorMessage(error)}`;
+			}
+		});
+		lifecycle = start.then(() => undefined);
+		const err = await start;
 		if (err) {
 			ctx.ui.notify("biff-bridge: could not start biff REPL: " + err, "warning");
 			return;
 		}
 
-		// Each Pi process owns a distinct biff identity and tmux session.
-		await runBiffCommand("tty " + BIFF_TTY);
+		// The owned session is created under BIFF_TTY, so no `tty` rename is needed.
 
 		// If the session shut down while we were starting up, do not install a
 		// poll timer that would outlive this session (session_shutdown already ran
 		// and cannot clear a timer created afterwards).
 		if (generation !== sessionGeneration) return;
 
-		ctx.ui.setStatus("biff", "biff: connected");
-
+		if (sessionWarning) {
+			ctx.ui.notify("biff-bridge: " + sessionWarning, "warning");
+			sessionWarning = undefined;
+		}
+		if (ON_DEMO_RELAY) {
+			ctx.ui.notify(
+				"biff-bridge: no .punt-labs/biff config in " +
+					(BIFF_CWD ?? process.cwd() + " or its parents") +
+					", so biff uses its public demo relay. " +
+					"Set BIFF_CWD to a directory with your team's biff config.",
+				"warning",
+			);
+		}
+		await pollUnread(ctx, generation);
+		// Shutdown may have run during that poll and cleared the timer already.
+		if (generation !== sessionGeneration) return;
 		pollTimer = setInterval(() => {
 			void pollUnread(ctx, generation);
 		}, POLL_INTERVAL_MS);
 	});
 
 	pi.on("session_shutdown", async () => {
+		shuttingDown = true;
 		sessionGeneration += 1;
 		wakeScheduler.shutdown();
 		talkMode = "idle";
@@ -268,6 +484,35 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			await tmux("kill-session", "-t", KEEP_SESSION);
 		} catch {
 			// The REPL may already have exited.
+		} finally {
+			// End the session so it doesn't linger in `biff who` as a stale tty.
+			// Chained after any startup still creating it, so neither can outlive shutdown.
+			// Chained after any startup still in flight. That startup may have
+			// launched a REPL after the teardown above, so kill it here too.
+			const finalCleanup = async () => {
+				await tmux("kill-session", "-t", KEEP_SESSION).catch(() => undefined);
+				await endOwnedSession().catch((error: unknown) => {
+					console.error(`biff-bridge: ${errorMessage(error)}`);
+				});
+				await removeStartupLog();
+				// Only once the session is really gone; after a failed end the
+				// reaper is the remaining cleanup attempt.
+				if (!ownedSessionId) cancelReaper();
+			};
+			lifecycle = lifecycle.then(finalCleanup);
+			// A startup stuck on the lock or a slow relay must not hold Pi's exit
+			// hostage. After SHUTDOWN_WAIT_MS, stop waiting: the chained cleanup
+			// still runs whenever that startup finishes, and startup checks the
+			// shutdown flag before launching anything.
+			const settled = await Promise.race([
+				lifecycle.then(() => true),
+				new Promise<false>((resolve) => setTimeout(() => resolve(false), SHUTDOWN_WAIT_MS).unref()),
+			]);
+			// Pi may exit before that startup finishes, taking the chained cleanup
+			// with it. Leave a detached reaper that outlives Pi and ends the session
+			// once creation can have finished. The name is unique to this process
+			// and can't have been renamed yet, since the REPL never started.
+			if (!settled) spawnShutdownReaper();
 		}
 	});
 
@@ -319,11 +564,12 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { to: string; message: string };
-			const invalid =
-				rejectControlChars(params.to, "to") ?? rejectControlChars(params.message, "message");
+			const invalid = checkToken(params.to, "to");
 			if (invalid) return result(invalid);
+			const message = textArg(params.message, "message");
+			if ("error" in message) return result(message.error);
 			try {
-				return result(await biffCommand("write " + params.to + " " + params.message));
+				return result(await biffCommand(biffLine("write", params.to.trim(), message.text)));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -347,11 +593,12 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			if (!params.clear && !text) {
 				return result("Provide non-empty text or set clear=true.");
 			}
-			if (text) {
-				const invalid = rejectControlChars(text, "text");
-				if (invalid) return result(invalid);
+			let command = "plan clear";
+			if (!params.clear) {
+				const plan = textArg(text ?? "", "text");
+				if ("error" in plan) return result(plan.error);
+				command = biffLine("plan", plan.text);
 			}
-			const command = params.clear ? "plan clear" : "plan " + (text ?? "");
 			try {
 				return result(await biffCommand(command));
 			} catch (error) {
@@ -373,10 +620,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { user: string };
-			const invalid = rejectControlChars(params.user, "user");
+			const invalid = checkToken(params.user, "user");
 			if (invalid) return result(invalid);
 			try {
-				return result(await biffCommand("finger " + params.user));
+				return result(await biffCommand(biffLine("finger", params.user.trim())));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -414,14 +661,14 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 				params.count === undefined
 					? undefined
 					: Math.min(100, Math.max(1, Math.trunc(params.count)));
-			const count = normalizedCount === undefined ? "" : " --count " + String(normalizedCount);
+			const args = normalizedCount === undefined ? [] : ["--count", String(normalizedCount)];
 			if (params.user) {
-				const invalid = rejectControlChars(params.user, "user");
+				const invalid = checkToken(params.user, "user");
 				if (invalid) return result(invalid);
+				args.push(params.user.trim());
 			}
-			const user = params.user ? " " + params.user : "";
 			try {
-				return result(await biffCommand("last" + count + user));
+				return result(await biffCommand(biffLine("last", ...args)));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -450,14 +697,18 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			let command = "wall";
 			if (params.action === "clear") command = "wall clear";
 			if (params.action === "post") {
-				const message = params.message?.trim();
-				if (!message) return result("A non-empty message is required to post the wall.");
-				const invalid =
-					rejectControlChars(message, "message") ??
-					(params.duration ? rejectControlChars(params.duration, "duration") : undefined);
-				if (invalid) return result(invalid);
-				command = "wall " + message;
-				if (params.duration) command += " " + params.duration;
+				if (!params.message?.trim()) {
+					return result("A non-empty message is required to post the wall.");
+				}
+				const message = textArg(params.message, "message");
+				if ("error" in message) return result(message.error);
+				const args = [message.text];
+				if (params.duration) {
+					const invalid = checkToken(params.duration, "duration");
+					if (invalid) return result(invalid);
+					args.push(params.duration.trim());
+				}
+				command = biffLine("wall", ...args);
 			}
 			try {
 				return result(await biffCommand(command));
@@ -479,7 +730,12 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as unknown as { value: "y" | "n" };
 			try {
-				return result(await biffCommand("mesg " + params.value));
+				const output = await biffCommand("mesg " + params.value);
+				// Only biff's own confirmation changes the footer; a refusal (talk
+				// active, REPL down) leaves the setting as it was.
+				const confirmed = /^is ([yn])\s*$/m.exec(output)?.[1];
+				if (confirmed) mesgOn = confirmed === "y";
+				return result(output);
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -497,10 +753,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, rawParams) {
 			const params = rawParams as { name: string };
-			const invalid = rejectControlChars(params.name, "name");
+			const invalid = checkToken(params.name, "name");
 			if (invalid) return result(invalid);
 			try {
-				return result(await biffCommand("tty " + params.name));
+				return result(await biffCommand(biffLine("tty", params.name.trim())));
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
 			}
@@ -541,14 +797,20 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, rawParams) {
 			if (talkMode !== "idle") return result("A talk session is already active.");
 			const params = rawParams as { to: string; opening?: string };
-			const invalid =
-				rejectControlChars(params.to, "to") ??
-				(params.opening ? rejectControlChars(params.opening, "opening") : undefined);
+			const invalid = checkToken(params.to, "to");
 			if (invalid) return result(invalid);
+			// biff parses "talk" by whitespace, not shlex: quotes would arrive
+			// literally, so the opening is flattened to one line but not quoted.
+			let opening = "";
+			if (params.opening?.trim()) {
+				const flat = textArg(params.opening, "opening");
+				if ("error" in flat) return result(flat.error);
+				opening = flat.text;
+			}
 			// Close the idle gate synchronously, before any await, so a second talk start
 			// or an ordinary biff tool issued in the same turn cannot slip past it.
 			talkMode = "waiting";
-			const command = "talk " + params.to + (params.opening ? " " + params.opening : "");
+			const command = "talk " + params.to.trim() + (opening ? " " + opening : "");
 			try {
 				const { delta, pane } = await sendAndWaitForTalkEvent(command, [
 					"Waiting for ",
@@ -618,12 +880,13 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, rawParams) {
 			if (talkMode !== "connected") return result("Talk is not connected yet.");
 			const params = rawParams as { message: string };
-			const invalid = rejectControlChars(params.message, "message");
-			if (invalid) return result(invalid);
+			// Talk lines are sent exactly as typed (no shlex), so flatten, don't quote.
+			const message = textArg(params.message, "message");
+			if ("error" in message) return result(message.error);
 			try {
 				// Use the pane observed at send completion as the baseline so a peer line
 				// arriving right after our send is not folded into the snapshot and lost.
-				talkSnapshot = await sendTalkLine(params.message);
+				talkSnapshot = await sendTalkLine(message.text);
 				return result("Talk message sent.");
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));
@@ -656,37 +919,53 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 	});
 }
 
-async function pollUnread(
-	ctx: {
-		ui: {
-			setStatus(id: string, text: string | undefined): void;
-			notify(msg: string, type: "info" | "warning" | "error"): void;
+interface StatusContext {
+	ui: {
+		setStatus(id: string, text: string | undefined): void;
+		notify(msg: string, type: "info" | "warning" | "error"): void;
+		theme?: {
+			fg(color: "warning" | "error" | "muted", text: string): string;
+			bold(text: string): string;
 		};
-	},
-	generation: number,
-) {
+	};
+}
+
+// Colours from Pi's theme, matching biff's statusline: unread in bold
+// warning colour, the wall in the error colour.
+function themeStyle(ctx: StatusContext): StatusStyle | undefined {
+	const theme = ctx.ui.theme;
+	if (!theme) return undefined;
+	return {
+		unread: (text) => theme.bold(theme.fg("warning", text)),
+		wall: (text) => theme.fg("error", text),
+		dim: (text) => theme.fg("muted", text),
+	};
+}
+
+// Refresh the footer from `status` and announce new unread mail. Runs at
+// startup and every POLL_INTERVAL_MS while the REPL is idle.
+async function pollUnread(ctx: StatusContext, generation: number) {
 	if (queuedCommands > 0 || talkMode !== "idle") return;
 	try {
 		const output = await biffCommand("status");
 		// The session may have shut down while we awaited `status`; if so, do not
 		// enqueue a wake or write UI that belongs to a replacement session.
 		if (generation !== sessionGeneration) return;
-		const match = /unread:\s*(\d+)/.exec(output);
-		const count = match ? parseInt(match[1], 10) : 0;
-
-		if (count > 0) {
-			ctx.ui.setStatus("biff", "biff: " + String(count) + " unread");
-			if (count > lastUnreadNotified) {
-				ctx.ui.notify("biff: " + String(count) + " unread message(s)", "info");
-				wakeScheduler.enqueue("biff:inbox", {
-					source: "Biff inbox update",
-					content:
-						`You have ${String(count)} unread Biff message(s). ` +
-						"Call biff_read to retrieve them and continue the conversation or task.",
-				});
-			}
-		} else {
-			ctx.ui.setStatus("biff", "biff: connected");
+		const status = parseBiffStatus(output);
+		if (!status) return;
+		ctx.ui.setStatus(
+			"biff",
+			formatBiffStatus(status, { mesgOn, demoRelay: ON_DEMO_RELAY }, themeStyle(ctx)),
+		);
+		const count = status.unread;
+		if (count > lastUnreadNotified) {
+			ctx.ui.notify("biff: " + String(count) + " unread message(s)", "info");
+			wakeScheduler.enqueue("biff:inbox", {
+				source: "Biff inbox update",
+				content:
+					`You have ${String(count)} unread Biff message(s). ` +
+					"Call biff_read to retrieve them and continue the conversation or task.",
+			});
 		}
 		lastUnreadNotified = count;
 	} catch {

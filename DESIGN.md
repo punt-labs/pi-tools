@@ -192,6 +192,78 @@ Name the bridge tmux session `keep-biff-bridge-<pid>` and its default Biff TTY
 `pi-<pid>`. Only the creating Pi process may clean up that tmux session. Biff
 remains responsible for relay-side disconnected-session reaping.
 
+The bridge starts Biff in the nearest directory, from Pi's working directory
+upward, that has `.punt-labs/biff/config.yaml` or `config.local.yaml`
+(`BIFF_CWD` overrides it). Biff reads relay settings only from the directory
+it starts in and otherwise uses its public demo relay, so a Pi session started
+in an unconfigured repository used to land on the wrong relay without notice;
+the bridge now warns when it finds no config.
+
+The bridge **owns** its Biff session rather than attaching to whatever the
+repo's pointer names. A bare `biff` attaches to the repo's pointed session, so
+two bridges (or a bridge and a test peer) in one repo shared one session, and
+each restart reused an old one: `biff who` listed stale TTYs, and messages to
+a peer landed in the shared mailbox. `lib/biff-session.ts` now:
+
+- ends any leftover live session named `pi-<pid>` and creates a fresh one,
+  keeping its stable id (`cli-…`);
+- restores the repository's previous default session afterwards, because
+  `biff session new` also makes the new session the default, which would put
+  a person running bare `biff` in the same repo into the bridge's mailbox.
+  Bridges in one repository hold a shared OS lock (`flock`, held by a small
+  child process) across the read, create and restore, so one bridge never
+  saves another's temporary session as the default. The lock file is keyed
+  like biff's own pointer, so worktrees that share a pointer share a lock,
+  and lives in a private directory under `~/.punt-labs/biff`. The kernel
+  releases it when the holder exits, so a crash can't leave a stale lock.
+  A bridge that can't take the lock within 60 s fails to start rather than
+  run unlocked. The restore only
+  writes if the pointer still names the bridge's new session, so a
+  concurrent `biff session use` wins. A failure to read or restore the
+  pointer is shown as a warning;
+- attaches with `biff --session <id>` and ends `<id>` at shutdown, so both
+  still work after `biff_tty` renames the session;
+- does the relay round trips before the REPL's startup wait begins;
+- ends the session if the REPL then fails to start, and is serialised with
+  shutdown so a startup still in flight can't leave a session behind.
+
+The pointer restore keeps a known, narrow race with people (who don't take
+the bridges' lock): biff offers no way to create a session without moving the
+pointer, so a `biff session use` landing between the bridge's check and its
+write is lost. The fix belongs in biff (PL-1137), as a `session new` option
+that leaves the pointer alone; the lock and restore code go once biff has it.
+
+The footer status follows Biff's Claude Code statusline (`biff/statusline.py`):
+`user:tty(N)`, highlighted when N > 0, `(n)` after `biff mesg n`, and the wall
+as `▶ sender: text`. It comes from the same `status` poll, also run once at
+startup. Pi's footer is one line, so the wall follows the label instead of
+taking a second line.
+
+The demo-relay warning is shown once per session, and also applies when
+`BIFF_CWD` names a directory without a Biff config. A `BIFF_RELAY_URL`
+override counts as a configured relay.
+
+### Arguments to the Biff REPL
+
+The REPL tokenises commands with Python `shlex`, so raw text broke on an
+unbalanced quote: an apostrophe ("Jim's") produced `Parse error: No closing
+quotation`. `lib/biff-args.ts` builds every command line:
+
+- identifiers (address, user, TTY, duration) must be one plain token;
+- free text (message, plan, wall post) is flattened to one line (line breaks
+  become ` / `, tabs become spaces) and passed as one `shlex`-quoted argument;
+- `talk` and talk lines aren't `shlex`-parsed by Biff, so their text is
+  flattened but not quoted;
+- other control characters are still rejected, because tmux literal input
+  would turn them into extra keystrokes.
+
+After a talk ends the REPL is rebuilt and reattaches to the session it already
+owns instead of ending and recreating it. A talk counts as ended on either of
+Biff's two closing lines, matched as whole lines only: the partner's
+`▶  USER has ended the conversation.` or the REPL's own
+`Talk with USER ended.`. A partner typing those words in a talk message does
+not end it.
+
 ### ADR-004 Consequences
 
 - Concurrent Pi sessions remain isolated.
