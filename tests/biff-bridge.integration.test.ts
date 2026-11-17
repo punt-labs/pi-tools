@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import biffBridgeExtension from "../extensions/biff-bridge.js";
 import { findBiffCwd } from "../lib/biff-config.js";
+import { createOwnedSession } from "../lib/biff-session.js";
 import { capturePane, sendAndWait } from "../lib/tmux-wait.js";
 
 const exec = promisify(execFile);
@@ -37,6 +38,7 @@ class RelayFixture {
 	private constructor(
 		readonly user: string,
 		sequence: number,
+		private readonly biffCwd: string | undefined,
 	) {
 		this.peerSession = `biff-bridge-peer-${String(process.pid)}-${String(sequence)}`;
 		this.peerTty = `peer-${String(process.pid)}-${String(sequence)}`;
@@ -54,14 +56,17 @@ class RelayFixture {
 		// same biff config and reach the same relay.
 		const envCwd = process.env.BIFF_CWD?.trim() ?? "";
 		const biffCwd = envCwd === "" ? findBiffCwd(process.cwd()) : envCwd;
+		// createOwnedSession, like the bridge, so the peer never leaves itself as
+		// the repo's default session.
+		const peer = await createOwnedSession({ cwd: biffCwd }, peerTty);
+		if (peer.warning) throw new Error(peer.warning);
 		await exec("tmux", [
 			"new-session",
 			"-d",
 			"-s",
 			peerSession,
 			...(biffCwd ? ["-c", biffCwd] : []),
-			`biff session end ${peerTty} >/dev/null 2>&1; ` +
-				`biff session new --tty ${peerTty} >/dev/null && exec biff --session ${peerTty}`,
+			`exec biff --session ${peer.id}`,
 		]);
 		// Keep the pane if the peer exits early, so a startup failure shows its
 		// error instead of a later "can't find pane".
@@ -75,7 +80,7 @@ class RelayFixture {
 		const user = /user:\s*(\S+)/.exec(peerStatus)?.[1];
 		if (!user) throw new Error("peer status did not contain a user");
 
-		const fixture = new RelayFixture(user, fixtureSequence);
+		const fixture = new RelayFixture(user, fixtureSequence, biffCwd === "" ? undefined : biffCwd);
 		const fakePi = {
 			on(event: string, handler: Handler) {
 				fixture.handlers.set(event, handler);
@@ -128,7 +133,10 @@ class RelayFixture {
 		await stopPeer(this.peerSession);
 		await killSession(bridgeSession);
 		// Ending the REPL leaves the session record; end it so `who` stays clean.
-		await exec("biff", ["session", "end", this.peerTty]).catch(() => undefined);
+		// Same directory as the peer, so it reaches the same relay.
+		await exec("biff", ["session", "end", this.peerTty], { cwd: this.biffCwd }).catch(
+			() => undefined,
+		);
 	}
 }
 
@@ -148,8 +156,9 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 
 	it("starts an isolated identity and shuts it down", async () => {
 		fixture = await RelayFixture.start();
-		// "biff: connected", or "biff: connected (demo relay)" with no biff config.
-		expect(fixture.statuses.some((s) => s.startsWith("biff: connected"))).toBe(true);
+		// biff's statusline label, e.g. "jim:pi-123(0)", plus "(demo relay)" with no config.
+		const label = `${fixture.user}:pi-${String(process.pid)}(`;
+		expect(fixture.statuses.some((s) => s.startsWith(label))).toBe(true);
 		expect(await fixture.tool("biff_status")).toContain(`session: pi-${String(process.pid)}`);
 		const who = await fixture.tool("biff_who");
 		expect(who).toContain(fixture.peerTty);
@@ -250,7 +259,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 			() => activeFixture.notifications.some((message) => message.includes("unread message")),
 			20_000,
 		);
-		expect(fixture.statuses.some((status) => /biff: \d+ unread/.test(status))).toBe(true);
+		expect(fixture.statuses.some((status) => /:pi-\d+\([1-9]\d*\)/.test(status))).toBe(true);
 		expect(fixture.wakes.some((wake) => wake.includes("Biff inbox update"))).toBe(true);
 		expect(await fixture.tool("biff_read")).toContain(inbound);
 	}, 60_000);

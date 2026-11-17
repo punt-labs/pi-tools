@@ -115,8 +115,9 @@ PR, Biff, and Vox examples.
 Connect Pi to Biff through a process-owned, durable Biff REPL. Every Pi process
 uses a distinct tmux session and Biff TTY, preventing concurrent Pi sessions
 from consuming one another's messages. The extension polls for unread mail,
-raises Pi notifications, and displays connection or unread state in the
-footer.
+raises Pi notifications, and shows the same status as Biff's Claude Code
+statusline in the footer: `user:tty(N)` with the unread count (highlighted when
+nonzero, `(n)` when messages are off), then the team wall when one is posted.
 
 Install and authenticate Biff before enabling this extension. See the
 [Biff installation instructions](https://github.com/punt-labs/biff#quick-start).

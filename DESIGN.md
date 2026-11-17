@@ -209,12 +209,27 @@ a peer landed in the shared mailbox. `lib/biff-session.ts` now:
   keeping its stable id (`cli-…`);
 - restores the repository's previous default session afterwards, because
   `biff session new` also makes the new session the default, which would put
-  a person running bare `biff` in the same repo into the bridge's mailbox;
+  a person running bare `biff` in the same repo into the bridge's mailbox.
+  The restore only writes if the pointer still names the bridge's new
+  session, so a concurrent `biff session use` or another bridge's restore
+  wins. A failure to read or restore the pointer is shown as a warning;
 - attaches with `biff --session <id>` and ends `<id>` at shutdown, so both
   still work after `biff_tty` renames the session;
 - does the relay round trips before the REPL's startup wait begins;
 - ends the session if the REPL then fails to start, and is serialised with
   shutdown so a startup still in flight can't leave a session behind.
+
+The pointer restore is a known, narrow race: biff offers no way to create a
+session without moving the pointer, so the bridge reads, creates and restores
+from outside biff, and a change landing between its check and its write is
+lost. The fix belongs in biff (PL-1137), as a `session new` option that leaves the
+pointer alone; the restore code goes once biff has it.
+
+The footer status follows Biff's Claude Code statusline (`biff/statusline.py`):
+`user:tty(N)`, highlighted when N > 0, `(n)` after `biff mesg n`, and the wall
+as `▶ sender: text`. It comes from the same `status` poll, also run once at
+startup. Pi's footer is one line, so the wall follows the label instead of
+taking a second line.
 
 The demo-relay warning is shown once per session, and also applies when
 `BIFF_CWD` names a directory without a Biff config. A `BIFF_RELAY_URL`
