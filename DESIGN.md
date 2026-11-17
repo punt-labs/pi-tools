@@ -210,11 +210,14 @@ a peer landed in the shared mailbox. `lib/biff-session.ts` now:
 - restores the repository's previous default session afterwards, because
   `biff session new` also makes the new session the default, which would put
   a person running bare `biff` in the same repo into the bridge's mailbox.
-  Bridges in one repository hold a shared OS lock (`flock` on a file in the
-  temp directory, held by a small child process) across the read, create
-  and restore, so one bridge never saves another's temporary session as the
-  default. The kernel releases it when the holder exits, so a crash can't
-  leave a stale lock and no bridge ever removes another's. The restore only
+  Bridges in one repository hold a shared OS lock (`flock`, held by a small
+  child process) across the read, create and restore, so one bridge never
+  saves another's temporary session as the default. The lock file is keyed
+  like biff's own pointer, so worktrees that share a pointer share a lock,
+  and lives in a private directory under `~/.punt-labs/biff`. The kernel
+  releases it when the holder exits, so a crash can't leave a stale lock.
+  A bridge that can't take the lock within 60 s fails to start rather than
+  run unlocked. The restore only
   writes if the pointer still names the bridge's new session, so a
   concurrent `biff session use` wins. A failure to read or restore the
   pointer is shown as a warning;

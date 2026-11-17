@@ -10,7 +10,8 @@
 // Two bridges starting together would otherwise race: B could read A's
 // temporary session as "the previous default" and put it back. The whole
 // read, create, restore sequence therefore holds a per-repository OS lock
-// (flock) that every bridge (and the integration peers) takes. A person running
+// (flock, keyed like biff's pointer, in ~/.punt-labs/biff) that every bridge
+// (and the integration peers) takes. A person running
 // `biff session use` meanwhile doesn't take the lock, so the restore only
 // writes when the pointer still names the bridge's new session; the
 // remaining window is the moment between that check and the write. Any failure to read
@@ -19,9 +20,6 @@
 
 import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -131,56 +129,77 @@ export async function createOwnedSession(
 
 const LOCK_WAIT_MS = 60_000;
 
-/** Lock file shared by every bridge working in the same repository. */
-async function repoLockPath(opts: BiffSessionOptions): Promise<string> {
-	let key: string;
-	try {
-		const { stdout } = await exec(
-			"git",
-			["rev-parse", "--path-format=absolute", "--git-common-dir"],
-			{
-				cwd: opts.cwd,
-			},
-		);
-		key = stdout.trim();
-	} catch {
-		key = opts.cwd ?? process.cwd();
-	}
-	const digest = createHash("sha256").update(key).digest("hex").slice(0, 16);
-	return join(tmpdir(), `biff-bridge-session-${digest}.lock`);
-}
-
-// Holds an exclusive flock on argv[1] until stdin closes. The kernel drops the
-// lock when this process exits for any reason, so a crashed holder never
+// Takes an exclusive flock and holds it until stdin closes. The kernel drops
+// the lock when this process exits for any reason, so a crashed holder never
 // leaves a stale lock and nobody else can release it.
+//
+// The lock file is keyed exactly like biff's own default-session pointer
+// (get_repo_common_root + CurrentPointer.repo_key), so every checkout and
+// worktree that shares a pointer shares a lock. It lives beside the pointers
+// in ~/.punt-labs/biff, in a directory only this user can write, so another
+// local user can't swap the file out from under a holder.
 const LOCK_SCRIPT = `
-import fcntl, sys
-with open(sys.argv[1], "a") as f:
-    fcntl.flock(f, fcntl.LOCK_EX)
-    print("locked", flush=True)
-    sys.stdin.read()
+import fcntl, os, sys
+from pathlib import Path
+from biff.cli_session_pointer import CurrentPointer
+from biff._stdlib import get_repo_common_root
+root = get_repo_common_root()
+if not root:
+    sys.exit("not inside a git repository")
+pointer = CurrentPointer.default()
+locks = pointer.root.parent / "bridge-locks"
+locks.mkdir(mode=0o700, parents=True, exist_ok=True)
+if locks.stat().st_uid != os.getuid():
+    sys.exit(f"{locks} is not owned by this user")
+locks.chmod(0o700)
+path = locks / (pointer.repo_key(Path(root)) + ".lock")
+fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print("locked", flush=True)
+sys.stdin.read()
 `;
 
 /**
- * Run `fn` holding a per-repository OS lock (flock, held by a small child
- * process running biff's Python). If the lock can't be had within
- * LOCK_WAIT_MS, `fn` runs anyway, so a stuck holder costs isolation, not startup.
+ * Run `fn` holding the repository's bridge lock (flock, held by a small child
+ * process running biff's Python). Throws, without running `fn`, if the lock
+ * isn't confirmed within LOCK_WAIT_MS: running unlocked could leave another
+ * bridge's session as the repository default.
  */
 export async function withRepoLock<T>(opts: BiffSessionOptions, fn: () => Promise<T>): Promise<T> {
-	const holder = spawn(await biffPython(), ["-c", LOCK_SCRIPT, await repoLockPath(opts)], {
-		stdio: ["pipe", "pipe", "ignore"],
+	const holder = spawn(await biffPython(), ["-c", LOCK_SCRIPT], {
+		cwd: opts.cwd,
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+	let stderr = "";
+	holder.stderr.on("data", (chunk: Buffer) => {
+		stderr += chunk.toString();
 	});
 	try {
-		await new Promise<void>((resolve) => {
-			const timer = setTimeout(resolve, LOCK_WAIT_MS);
-			const done = () => {
+		const acquired = await new Promise<boolean>((resolve) => {
+			const timer = setTimeout(() => {
+				resolve(false);
+			}, LOCK_WAIT_MS);
+			const settle = (value: boolean) => {
 				clearTimeout(timer);
-				resolve();
+				resolve(value);
 			};
-			holder.stdout.once("data", done);
-			holder.once("exit", done);
-			holder.once("error", done);
+			holder.stdout.once("data", (chunk: Buffer) => {
+				settle(chunk.toString().startsWith("locked"));
+			});
+			holder.once("exit", () => {
+				settle(false);
+			});
+			holder.once("error", () => {
+				settle(false);
+			});
 		});
+		if (!acquired) {
+			const reason = stderr.trim().split("\n").pop() ?? "";
+			throw new Error(
+				"could not take the bridge session lock" +
+					(reason ? `: ${reason}` : ` within ${String(LOCK_WAIT_MS / 1000)}s`),
+			);
+		}
 		return await fn();
 	} finally {
 		holder.stdin.end();
@@ -197,6 +216,9 @@ async function createUnlocked(opts: BiffSessionOptions, tty: string): Promise<Ow
 		warning = "could not read the repository's default biff session: " + messageOf(error);
 	}
 	await endSession(opts, tty);
+	// Ids that existed before creation, so an ambiguous failure can't mistake
+	// an older record with the same name (in any repository) for ours.
+	const before = await liveSessionIds(opts).catch(() => undefined);
 	let id: string;
 	try {
 		const { stdout } = await exec("biff", ["--json", "session", "new", "--tty", tty], {
@@ -210,8 +232,10 @@ async function createUnlocked(opts: BiffSessionOptions, tty: string): Promise<Ow
 		// A timeout or garbled reply may come after biff created the session and
 		// moved the pointer. Undo both by name (unique to this process), so a
 		// failed start leaves nothing live and no bridge session as the default.
-		await undoAmbiguousCreate(opts, tty, previous);
-		throw new Error("biff session new failed: " + lastStderrLine(error));
+		const cleanup = await undoAmbiguousCreate(opts, tty, previous, before);
+		throw new Error(
+			"biff session new failed: " + lastStderrLine(error) + (cleanup ? `; ${cleanup}` : ""),
+		);
 	}
 	if (previous !== undefined) {
 		try {
@@ -226,31 +250,71 @@ async function createUnlocked(opts: BiffSessionOptions, tty: string): Promise<Ow
 	return warning ? { id, warning } : { id };
 }
 
+/**
+ * Undo a `session new` whose reply was lost: find the session it may have
+ * created, put the default pointer back (or clear it, when the previous value
+ * is unknown, rather than leave it naming an ended session), then end it.
+ * Returns a description of anything it couldn't do, or "" when clean.
+ */
 async function undoAmbiguousCreate(
 	opts: BiffSessionOptions,
 	tty: string,
 	previous: string | undefined,
-): Promise<void> {
-	const id = await sessionIdForName(opts, tty).catch(() => undefined);
-	if (!id) return;
-	if (previous !== undefined) {
-		await restoreDefaultSession(opts, id, previous).catch(() => undefined);
+	before: Set<string> | undefined,
+): Promise<string> {
+	let id: string | undefined;
+	try {
+		id = await newSessionId(opts, tty, before);
+	} catch (error) {
+		return `could not check for a half-created session ${tty}: ${messageOf(error)}`;
+	}
+	if (!id) return "";
+	const problems: string[] = [];
+	try {
+		await restoreDefaultSession(opts, id, previous ?? "");
+	} catch (error) {
+		problems.push(`could not restore the default session: ${messageOf(error)}`);
 	}
 	await endSession(opts, id);
+	return problems.join("; ");
 }
 
-/** Id of the live session named `tty` in this repository, if any. */
-async function sessionIdForName(
-	opts: BiffSessionOptions,
-	tty: string,
-): Promise<string | undefined> {
+interface SessionRow {
+	name?: unknown;
+	state?: unknown;
+	id?: unknown;
+}
+
+async function listSessions(opts: BiffSessionOptions): Promise<SessionRow[]> {
 	const { stdout } = await exec("biff", ["--json", "session", "ls"], {
 		cwd: opts.cwd,
 		timeout: RELAY_TIMEOUT_MS,
 	});
-	const rows = JSON.parse(stdout) as { name?: unknown; state?: unknown; id?: unknown }[];
-	const row = rows.find((r) => r.name === tty && r.state === "live");
-	return typeof row?.id === "string" ? row.id : undefined;
+	return JSON.parse(stdout) as SessionRow[];
+}
+
+async function liveSessionIds(opts: BiffSessionOptions): Promise<Set<string>> {
+	const rows = await listSessions(opts);
+	return new Set(
+		rows.flatMap((r) => (r.state === "live" && typeof r.id === "string" ? [r.id] : [])),
+	);
+}
+
+/**
+ * Id of the live session named `tty` that wasn't there before creation.
+ * With no `before` snapshot, only an unambiguous single match is trusted.
+ */
+async function newSessionId(
+	opts: BiffSessionOptions,
+	tty: string,
+	before: Set<string> | undefined,
+): Promise<string | undefined> {
+	const matches = (await listSessions(opts)).flatMap((r) =>
+		r.name === tty && r.state === "live" && typeof r.id === "string" && !before?.has(r.id)
+			? [r.id]
+			: [],
+	);
+	return matches.length === 1 ? matches[0] : undefined;
 }
 
 function messageOf(error: unknown): string {

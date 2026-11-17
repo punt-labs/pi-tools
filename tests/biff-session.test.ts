@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	createOwnedSession,
@@ -7,7 +10,9 @@ import {
 	withRepoLock,
 } from "../lib/biff-session.js";
 
-describe("withRepoLock", () => {
+// The lock runs biff's Python, so these need biff installed: integration only.
+// Each call starts a Python process, so allow more than vitest's 5 s default.
+describe.skipIf(process.env.BIFF_INTEGRATION !== "1")("withRepoLock", { timeout: 30_000 }, () => {
 	it("serialises overlapping callers in one repository", async () => {
 		const events: string[] = [];
 		const run = (name: string) =>
@@ -56,7 +61,19 @@ describe("pythonFromShebang", () => {
 	});
 
 	it("resolves /usr/bin/env python3 on PATH", async () => {
-		expect(await pythonFromShebang("#!/usr/bin/env python3", "biff")).toMatch(/python3$/);
+		// A fake python3 on a private PATH, so the test needs no real Python.
+		const dir = mkdtempSync(join(tmpdir(), "fakepy-"));
+		const fake = join(dir, "python3");
+		writeFileSync(fake, "#!/bin/sh\n");
+		chmodSync(fake, 0o755);
+		const savedPath = process.env.PATH;
+		process.env.PATH = `${dir}:/usr/bin:/bin`;
+		try {
+			expect(await pythonFromShebang("#!/usr/bin/env python3", "biff")).toBe(fake);
+		} finally {
+			process.env.PATH = savedPath;
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects a shell trampoline and a missing shebang", async () => {
