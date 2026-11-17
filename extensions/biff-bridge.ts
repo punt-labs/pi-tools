@@ -338,12 +338,15 @@ async function sendTalkLine(message: string): Promise<string> {
 	});
 }
 
-// Longer than a worst-case startup: the 60 s lock wait plus relay calls.
-const REAPER_DELAY_S = 120;
+// How long the reaper keeps trying: longer than a worst-case startup (60 s
+// lock wait plus several 10-20 s biff calls), so a session created late is
+// still ended.
+const REAPER_WINDOW_S = 300;
+const REAPER_INTERVAL_S = 15;
 
-// The pending reaper, while Pi is still running. Cancelled once the in-process
-// cleanup finishes or a new session starts, so it can never end a later
-// session that reuses this process's name.
+// The pending reaper, while Pi is still running. Cancelled once the session
+// has really been ended in-process, or when a new session starts, so it can
+// never end a later session that reuses this process's name.
 let reaper: ChildProcess | undefined;
 
 function cancelReaper(): void {
@@ -351,13 +354,27 @@ function cancelReaper(): void {
 	reaper = undefined;
 }
 
+// Detached, so it outlives Pi. Every REAPER_INTERVAL_S for REAPER_WINDOW_S it
+// kills the tmux REPL and tries to end the session, stopping once biff ends
+// it. Retrying covers a session created after Pi exits (a still-running
+// `biff session new`) and a relay that's briefly down.
 function spawnShutdownReaper(): void {
 	const script =
-		'sleep "$1"; tmux kill-session -t "$2" 2>/dev/null; ' + 'biff session end "$3" >/dev/null 2>&1';
+		'end=$(( $(date +%s) + $1 )); while [ "$(date +%s)" -lt "$end" ]; do ' +
+		'sleep "$2"; tmux kill-session -t "$3" 2>/dev/null; ' +
+		'biff session end "$4" >/dev/null 2>&1 && exit 0; done';
 	const ref = ownedSessionId || BIFF_TTY;
 	const child = spawn(
 		"sh",
-		["-c", script, "biff-bridge-reaper", String(REAPER_DELAY_S), KEEP_SESSION, ref],
+		[
+			"-c",
+			script,
+			"biff-bridge-reaper",
+			String(REAPER_WINDOW_S),
+			String(REAPER_INTERVAL_S),
+			KEEP_SESSION,
+			ref,
+		],
 		{ cwd: BIFF_CWD, detached: true, stdio: "ignore" },
 	);
 	child.unref();
@@ -460,7 +477,9 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 					console.error(`biff-bridge: ${errorMessage(error)}`);
 				});
 				await removeStartupLog();
-				cancelReaper();
+				// Only once the session is really gone; after a failed end the
+				// reaper is the remaining cleanup attempt.
+				if (!ownedSessionId) cancelReaper();
 			};
 			lifecycle = lifecycle.then(finalCleanup);
 			// A startup stuck on the lock or a slow relay must not hold Pi's exit
