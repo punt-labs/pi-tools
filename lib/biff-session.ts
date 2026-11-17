@@ -220,12 +220,16 @@ async function createUnlocked(opts: BiffSessionOptions, tty: string): Promise<Ow
 	} catch (error) {
 		warning = "could not read the repository's default biff session: " + messageOf(error);
 	}
-	// A leftover live session with this name must go first: biff would refuse
-	// the name anyway, and starting without ending it would leave it online.
+	// A leftover live session with this name must go first, or it would stay
+	// online untracked. A record that biff says belongs to another user or
+	// repository isn't ours to end and doesn't block a new session here, so
+	// creation goes ahead (and reports biff's own error if the name is taken).
 	try {
 		await endSession(opts, tty);
 	} catch (error) {
-		throw new Error(`could not end the leftover biff session ${tty}: ${messageOf(error)}`);
+		if (!messageOf(error).includes(" belongs to ")) {
+			throw new Error(`could not end the leftover biff session ${tty}: ${messageOf(error)}`);
+		}
 	}
 	// Ids that existed before creation, so an ambiguous failure can't mistake
 	// an older record with the same name (in any repository) for ours.

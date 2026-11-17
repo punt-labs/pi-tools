@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -338,6 +338,32 @@ async function sendTalkLine(message: string): Promise<string> {
 	});
 }
 
+// Longer than a worst-case startup: the 60 s lock wait plus relay calls.
+const REAPER_DELAY_S = 120;
+
+// The pending reaper, while Pi is still running. Cancelled once the in-process
+// cleanup finishes or a new session starts, so it can never end a later
+// session that reuses this process's name.
+let reaper: ChildProcess | undefined;
+
+function cancelReaper(): void {
+	reaper?.kill();
+	reaper = undefined;
+}
+
+function spawnShutdownReaper(): void {
+	const script =
+		'sleep "$1"; tmux kill-session -t "$2" 2>/dev/null; ' + 'biff session end "$3" >/dev/null 2>&1';
+	const ref = ownedSessionId || BIFF_TTY;
+	const child = spawn(
+		"sh",
+		["-c", script, "biff-bridge-reaper", String(REAPER_DELAY_S), KEEP_SESSION, ref],
+		{ cwd: BIFF_CWD, detached: true, stdio: "ignore" },
+	);
+	child.unref();
+	reaper = child;
+}
+
 export default function biffBridgeExtension(pi: ExtensionAPI) {
 	pi.on("agent_settled", () => wakeScheduler.flush());
 	pi.on("session_start", async (_event, ctx) => {
@@ -348,6 +374,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		const generation = sessionGeneration;
 		// A fresh Pi session must re-announce any standing unread mail, so clear the
 		// baseline that suppresses duplicate notifications within a single session.
+		cancelReaper();
 		lastUnreadNotified = 0;
 		mesgOn = true;
 		shuttingDown = false;
@@ -433,16 +460,22 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 					console.error(`biff-bridge: ${errorMessage(error)}`);
 				});
 				await removeStartupLog();
+				cancelReaper();
 			};
 			lifecycle = lifecycle.then(finalCleanup);
 			// A startup stuck on the lock or a slow relay must not hold Pi's exit
 			// hostage. After SHUTDOWN_WAIT_MS, stop waiting: the chained cleanup
 			// still runs whenever that startup finishes, and startup checks the
 			// shutdown flag before launching anything.
-			await Promise.race([
-				lifecycle,
-				new Promise((resolve) => setTimeout(resolve, SHUTDOWN_WAIT_MS).unref()),
+			const settled = await Promise.race([
+				lifecycle.then(() => true),
+				new Promise<false>((resolve) => setTimeout(() => resolve(false), SHUTDOWN_WAIT_MS).unref()),
 			]);
+			// Pi may exit before that startup finishes, taking the chained cleanup
+			// with it. Leave a detached reaper that outlives Pi and ends the session
+			// once creation can have finished. The name is unique to this process
+			// and can't have been renamed yet, since the REPL never started.
+			if (!settled) spawnShutdownReaper();
 		}
 	});
 
