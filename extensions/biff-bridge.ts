@@ -3,6 +3,8 @@ import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { capturePane, sendAndWait } from "../lib/tmux-wait.js";
 import { biffLine, checkToken, flattenText } from "../lib/biff-args.js";
+import { findBiffCwd } from "../lib/biff-config.js";
+import { isTalkHangup } from "../lib/biff-talk.js";
 import { wakeScheduler } from "../lib/wake-scheduler.js";
 
 const exec = promisify(execFile);
@@ -11,14 +13,19 @@ const KEEP_SESSION = `keep-biff-bridge-${String(process.pid)}`;
 const BIFF_TTY = `pi-${String(process.pid)}`;
 const BIFF_PROMPT = /▶\s*$/;
 const POLL_INTERVAL_MS = 15_000;
-// Biff reads its relay and team settings from the git repo it is started in
-// (`.punt-labs/biff/config.local.yaml`). By default that is Pi's working
-// directory; BIFF_CWD pins the REPL to one repo's config instead, so every Pi
-// session joins the same relay no matter where Pi was launched.
-const BIFF_CWD = (() => {
-	const value = process.env.BIFF_CWD?.trim();
-	return value === undefined || value === "" ? undefined : value; // empty = unset
-})();
+// Where the biff REPL starts, which decides the relay config it reads
+// (lib/biff-config.ts):
+//   1. BIFF_CWD, when set (explicit choice);
+//   2. else the nearest directory, from Pi's working directory upward, that
+//      has a .punt-labs/biff config (a repo, or a workspace like ~/Coding/punt-labs);
+//   3. else Pi's working directory, and the user is warned that biff will use
+//      its public demo relay instead of the team's.
+function biffCwdFromEnv(): string | undefined {
+	const value = process.env.BIFF_CWD?.trim() ?? "";
+	return value === "" ? undefined : value; // empty = unset
+}
+
+const BIFF_CWD = biffCwdFromEnv() ?? findBiffCwd(process.cwd());
 const STARTUP_TIMEOUT_MS = 15_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -58,8 +65,8 @@ async function restartOwnedRepl(): Promise<void> {
 			}
 			if (await tmuxSessionExists()) await tmux("kill-session", "-t", KEEP_SESSION);
 		}
-		// ensureBiffRepl recreates the session under BIFF_TTY, so no `tty` rename.
-		const startupError = await ensureBiffRepl();
+		// Reattach to the session we already own (created under BIFF_TTY).
+		const startupError = await ensureBiffRepl("reattach");
 		if (startupError) throw new Error(startupError);
 	});
 }
@@ -77,6 +84,13 @@ function ownedSessionCommand(): string {
 	);
 }
 
+// After a talk the REPL is rebuilt, but the Biff session itself is still ours
+// and live: reattach to it rather than ending and recreating it, which costs
+// two relay round trips (several seconds) for no benefit.
+function reattachCommand(): string {
+	return `exec biff --session ${BIFF_TTY}`;
+}
+
 async function endOwnedSession(): Promise<void> {
 	try {
 		const cwd = BIFF_CWD ? { cwd: BIFF_CWD } : {};
@@ -86,7 +100,7 @@ async function endOwnedSession(): Promise<void> {
 	}
 }
 
-async function ensureBiffRepl(): Promise<string | null> {
+async function ensureBiffRepl(mode: "fresh" | "reattach" = "fresh"): Promise<string | null> {
 	try {
 		await tmux("has-session", "-t", KEEP_SESSION);
 		return null;
@@ -95,7 +109,8 @@ async function ensureBiffRepl(): Promise<string | null> {
 	}
 	try {
 		const cwdArgs = BIFF_CWD ? ["-c", BIFF_CWD] : [];
-		await tmux("new-session", "-d", "-s", KEEP_SESSION, ...cwdArgs, ownedSessionCommand());
+		const command = mode === "fresh" ? ownedSessionCommand() : reattachCommand();
+		await tmux("new-session", "-d", "-s", KEEP_SESSION, ...cwdArgs, command);
 		// wait for initial REPL startup and prompt
 		const deadline = Date.now() + STARTUP_TIMEOUT_MS;
 		while (Date.now() < deadline) {
@@ -163,10 +178,6 @@ function paneDelta(before: string, after: string): string {
 	const limit = Math.min(before.length, after.length);
 	while (shared < limit && before[shared] === after[shared]) shared += 1;
 	return after.slice(shared).trim();
-}
-
-function isTalkHangup(text: string): boolean {
-	return text.includes("Talk with ") && (text.includes(" ended.") || text.includes(" cancelled."));
 }
 
 function updateTalkMode(text: string): void {
@@ -272,7 +283,16 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		// and cannot clear a timer created afterwards).
 		if (generation !== sessionGeneration) return;
 
-		ctx.ui.setStatus("biff", "biff: connected");
+		if (!BIFF_CWD) {
+			ctx.ui.notify(
+				"biff-bridge: no .punt-labs/biff config in " +
+					process.cwd() +
+					" or its parents, so biff uses its public demo relay. " +
+					"Set BIFF_CWD to a directory with your team's biff config.",
+				"warning",
+			);
+		}
+		ctx.ui.setStatus("biff", BIFF_CWD ? "biff: connected" : "biff: connected (demo relay)");
 
 		pollTimer = setInterval(() => {
 			void pollUnread(ctx, generation);
@@ -737,7 +757,16 @@ async function pollUnread(
 				});
 			}
 		} else {
-			ctx.ui.setStatus("biff", "biff: connected");
+			if (!BIFF_CWD) {
+				ctx.ui.notify(
+					"biff-bridge: no .punt-labs/biff config in " +
+						process.cwd() +
+						" or its parents, so biff uses its public demo relay. " +
+						"Set BIFF_CWD to a directory with your team's biff config.",
+					"warning",
+				);
+			}
+			ctx.ui.setStatus("biff", BIFF_CWD ? "biff: connected" : "biff: connected (demo relay)");
 		}
 		lastUnreadNotified = count;
 	} catch {

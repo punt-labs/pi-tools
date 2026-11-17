@@ -189,7 +189,15 @@ consumption.
 ### ADR-004 Decision
 
 Name the bridge tmux session `keep-biff-bridge-<pid>` and its default Biff TTY
-`pi-<pid>`.
+`pi-<pid>`. Only the creating Pi process may clean up that tmux session. Biff
+remains responsible for relay-side disconnected-session reaping.
+
+The bridge starts Biff in the nearest directory, from Pi's working directory
+upward, that has `.punt-labs/biff/config.yaml` or `config.local.yaml`
+(`BIFF_CWD` overrides it). Biff reads relay settings only from the directory
+it starts in and otherwise uses its public demo relay, so a Pi session started
+in an unconfigured repository used to land on the wrong relay without notice;
+the bridge now warns when it finds no config.
 
 The bridge **owns** its Biff session rather than attaching to whatever the
 repo's pointer names. A bare `biff` attaches to the repo's pointed session, so
@@ -211,8 +219,12 @@ quotation`. `lib/biff-args.ts` builds every command line:
 - `talk` and talk lines aren't `shlex`-parsed by Biff, so their text is
   flattened but not quoted;
 - other control characters are still rejected, because tmux literal input
-  would turn them into extra keystrokes. Only the creating Pi process may clean up that tmux session. Biff
-remains responsible for relay-side disconnected-session reaping.
+  would turn them into extra keystrokes.
+
+After a talk ends the REPL is rebuilt and reattaches to the session it already
+owns (`biff --session pi-<pid>`) instead of ending and recreating it. A talk
+counts as ended on either of Biff's two closing lines: the partner's
+"has ended the conversation." or the REPL's own "Talk with … ended.".
 
 ### ADR-004 Consequences
 

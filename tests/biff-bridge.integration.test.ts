@@ -57,7 +57,14 @@ class RelayFixture {
 			`biff session end ${peerTty} >/dev/null 2>&1; ` +
 				`biff session new --tty ${peerTty} >/dev/null && exec biff --session ${peerTty}`,
 		]);
-		await waitUntil(async () => prompt.test(await capturePane(peerSession)), 15_000);
+		// Keep the pane if the peer exits early, so a startup failure shows its
+		// error instead of a later "can't find pane".
+		await exec("tmux", ["set-option", "-t", peerSession, "remain-on-exit", "on"]);
+		await waitUntil(async () => {
+			const pane = await capturePane(peerSession);
+			if (await paneDead(peerSession)) throw new Error(`peer biff exited:\n${pane}`);
+			return prompt.test(pane);
+		}, 20_000);
 		const peerStatus = await sendAndWait(peerSession, "status", prompt);
 		const user = /user:\s*(\S+)/.exec(peerStatus)?.[1];
 		if (!user) throw new Error("peer status did not contain a user");
@@ -124,10 +131,12 @@ const integrationEnabled = process.env.BIFF_INTEGRATION === "1";
 describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () => {
 	let fixture: RelayFixture | undefined;
 
+	// Cleanup ends real biff sessions over the relay (a few seconds each), so it
+	// needs more than vitest's 10 s default hook timeout.
 	afterEach(async () => {
 		await fixture?.cleanup();
 		fixture = undefined;
-	});
+	}, 30_000);
 
 	it("starts an isolated identity and shuts it down", async () => {
 		fixture = await RelayFixture.start();
@@ -360,6 +369,11 @@ async function waitUntil(
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	throw new Error(`condition not met within ${String(timeoutMs)}ms`);
+}
+
+async function paneDead(session: string): Promise<boolean> {
+	const { stdout } = await exec("tmux", ["display-message", "-p", "-t", session, "#{pane_dead}"]);
+	return stdout.trim() === "1";
 }
 
 async function sessionExists(session: string): Promise<boolean> {
