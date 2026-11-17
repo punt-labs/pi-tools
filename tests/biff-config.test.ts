@@ -6,7 +6,12 @@ import { findBiffCwd, hasBiffConfig } from "../lib/biff-config.js";
 
 let root: string;
 
+function makeRepo(dir: string): void {
+	mkdirSync(join(dir, ".git"), { recursive: true });
+}
+
 function makeConfig(dir: string, file: string): void {
+	makeRepo(dir);
 	mkdirSync(join(dir, ".punt-labs", "biff"), { recursive: true });
 	writeFileSync(join(dir, ".punt-labs", "biff", file), "relay: {}\n");
 }
@@ -33,6 +38,7 @@ describe("findBiffCwd", () => {
 		makeConfig(root, "config.local.yaml");
 		const nested = join(root, "repo", "src", "deep");
 		mkdirSync(nested, { recursive: true });
+		makeRepo(join(root, "repo"));
 		expect(findBiffCwd(nested)).toBe(root);
 	});
 
@@ -51,6 +57,25 @@ describe("findBiffCwd", () => {
 		const found = findBiffCwd(nested);
 		// The temp dir's own ancestors are not configured on any normal machine.
 		expect(found?.startsWith(root) ?? false).toBe(false);
+	});
+
+	it("uses the repository root's config from a subdirectory", () => {
+		root = realpathSync(mkdtempSync(join(tmpdir(), "biffcwd-")));
+		makeConfig(root, "config.yaml");
+		const sub = join(root, "src");
+		mkdirSync(sub);
+		expect(hasBiffConfig(sub)).toBe(true);
+		expect(findBiffCwd(sub)).toBe(root);
+	});
+
+	it("skips a configured parent that is not a repository", () => {
+		root = realpathSync(mkdtempSync(join(tmpdir(), "biffcwd-")));
+		mkdirSync(join(root, ".punt-labs", "biff"), { recursive: true });
+		writeFileSync(join(root, ".punt-labs", "biff", "config.yaml"), "relay: {}\n");
+		const repo = join(root, "repo");
+		makeRepo(repo);
+		expect(hasBiffConfig(root)).toBe(false);
+		expect(findBiffCwd(repo)?.startsWith(root) ?? false).toBe(false);
 	});
 
 	it("ignores a .punt-labs/biff directory with no config file", () => {

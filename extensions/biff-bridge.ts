@@ -21,8 +21,8 @@ const POLL_INTERVAL_MS = 15_000;
 // Where the biff REPL starts, which decides the relay config it reads
 // (lib/biff-config.ts):
 //   1. BIFF_CWD, when set (explicit choice);
-//   2. else the nearest directory, from Pi's working directory upward, that
-//      has a .punt-labs/biff config (a repo, or a workspace like ~/Coding/punt-labs);
+//   2. else the nearest enclosing git repository root with a .punt-labs/biff
+//      config (this repo, or a workspace repo like ~/Coding/punt-labs);
 //   3. else Pi's working directory, and the user is warned that biff will use
 //      its public demo relay instead of the team's.
 function biffCwdFromEnv(): string | undefined {
@@ -135,9 +135,26 @@ async function ensureBiffRepl(): Promise<string | null> {
 		// The session ends when biff exits, so a dead REPL is never mistaken for a
 		// live one and the next command starts a fresh one.
 		const cwdArgs = BIFF_CWD ? ["-c", BIFF_CWD] : [];
-		const command = `biff --session ${ownedSessionId} 2> >(tee ${STARTUP_LOG} >&2)`;
+		// Paths and the id go in as arguments ($1, $2), not into the script, so
+		// no quoting is needed. Closing stderr and waiting for tee means the log
+		// is complete by the time bash, and with it the tmux session, has gone.
+		const script =
+			'exec 2> >(tee "$1" >&2); tee_pid=$!; biff --session "$2"; status=$?; ' +
+			"exec 2>&-; wait $tee_pid; exit $status";
 		await rm(STARTUP_LOG, { force: true });
-		await tmux("new-session", "-d", "-s", KEEP_SESSION, ...cwdArgs, "bash", "-c", command);
+		await tmux(
+			"new-session",
+			"-d",
+			"-s",
+			KEEP_SESSION,
+			...cwdArgs,
+			"bash",
+			"-c",
+			script,
+			"biff-bridge",
+			STARTUP_LOG,
+			ownedSessionId,
+		);
 		const deadline = Date.now() + STARTUP_TIMEOUT_MS;
 		while (Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 300));
@@ -346,6 +363,8 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			);
 		}
 		await pollUnread(ctx, generation);
+		// Shutdown may have run during that poll and cleared the timer already.
+		if (generation !== sessionGeneration) return;
 		pollTimer = setInterval(() => {
 			void pollUnread(ctx, generation);
 		}, POLL_INTERVAL_MS);
@@ -381,6 +400,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			// Chained after any startup still creating it, so neither can outlive shutdown.
 			lifecycle = lifecycle.then(endOwnedSession);
 			await lifecycle;
+			await rm(STARTUP_LOG, { force: true });
 		}
 	});
 
@@ -599,7 +619,10 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			const params = rawParams as unknown as { value: "y" | "n" };
 			try {
 				const output = await biffCommand("mesg " + params.value);
-				mesgOn = params.value === "y";
+				// Only biff's own confirmation changes the footer; a refusal (talk
+				// active, REPL down) leaves the setting as it was.
+				const confirmed = /^is ([yn])\s*$/m.exec(output)?.[1];
+				if (confirmed) mesgOn = confirmed === "y";
 				return result(output);
 			} catch (error) {
 				return result("Failed: " + errorMessage(error));

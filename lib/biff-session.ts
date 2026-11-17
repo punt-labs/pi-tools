@@ -204,6 +204,10 @@ async function createUnlocked(opts: BiffSessionOptions, tty: string): Promise<Ow
 		if (typeof parsed !== "string" || !parsed) throw new Error("biff session new returned no id");
 		id = parsed;
 	} catch (error) {
+		// A timeout or garbled reply may come after biff created the session and
+		// moved the pointer. Undo both by name (unique to this process), so a
+		// failed start leaves nothing live and no bridge session as the default.
+		await undoAmbiguousCreate(opts, tty, previous);
 		throw new Error("biff session new failed: " + lastStderrLine(error));
 	}
 	if (previous !== undefined) {
@@ -217,6 +221,33 @@ async function createUnlocked(opts: BiffSessionOptions, tty: string): Promise<Ow
 		warning += `. A bare \`biff\` here may now attach to ${tty}; run \`biff session use <name>\` to fix.`;
 	}
 	return warning ? { id, warning } : { id };
+}
+
+async function undoAmbiguousCreate(
+	opts: BiffSessionOptions,
+	tty: string,
+	previous: string | undefined,
+): Promise<void> {
+	const id = await sessionIdForName(opts, tty).catch(() => undefined);
+	if (!id) return;
+	if (previous !== undefined) {
+		await restoreDefaultSession(opts, id, previous).catch(() => undefined);
+	}
+	await endSession(opts, id);
+}
+
+/** Id of the live session named `tty` in this repository, if any. */
+async function sessionIdForName(
+	opts: BiffSessionOptions,
+	tty: string,
+): Promise<string | undefined> {
+	const { stdout } = await exec("biff", ["--json", "session", "ls"], {
+		cwd: opts.cwd,
+		timeout: RELAY_TIMEOUT_MS,
+	});
+	const rows = JSON.parse(stdout) as { name?: unknown; state?: unknown; id?: unknown }[];
+	const row = rows.find((r) => r.name === tty && r.state === "live");
+	return typeof row?.id === "string" ? row.id : undefined;
 }
 
 function messageOf(error: unknown): string {
