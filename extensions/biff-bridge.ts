@@ -354,6 +354,17 @@ function cancelReaper(): void {
 	reaper = undefined;
 }
 
+// A reaper left by an earlier Pi with this same process id (ids get reused)
+// targets this process's names, and would end this bridge's session. Stop it
+// before starting: this startup ends any leftover `pi-<pid>` session itself,
+// which is all that reaper was for. Matched on its command line, which
+// carries the tmux name (unique to this pid) right after the window and
+// interval arguments.
+async function cancelStaleReapers(): Promise<void> {
+	const pattern = `biff-bridge-reaper [0-9]+ [0-9]+ ${KEEP_SESSION} `;
+	await exec("pkill", ["-f", pattern]).catch(() => undefined);
+}
+
 // Detached, so it outlives Pi. Every REAPER_INTERVAL_S for REAPER_WINDOW_S it
 // kills the tmux REPL and tries to end the session. Retrying covers a session
 // created after Pi exits (a still-running `biff session new`) and a relay
@@ -402,6 +413,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		mesgOn = true;
 		shuttingDown = false;
 		const start = lifecycle.then(async () => {
+			await cancelStaleReapers();
 			const startError = await ensureBiffRepl();
 			// A failed start must not leave a live session behind in `biff who`.
 			if (!startError) return startError;
