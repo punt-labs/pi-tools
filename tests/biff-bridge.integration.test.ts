@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import biffBridgeExtension from "../extensions/biff-bridge.js";
+import { findBiffCwd } from "../lib/biff-config.js";
 import { capturePane, sendAndWait } from "../lib/tmux-wait.js";
 
 const exec = promisify(execFile);
@@ -49,11 +50,16 @@ class RelayFixture {
 		const peerTty = `peer-${String(process.pid)}-${String(fixtureSequence)}`;
 		// The peer owns its own session too: a bare `biff` would attach to this
 		// repo's pointed session, the same one the bridge would otherwise share.
+		// Start the peer in the same directory the bridge picks, so both read the
+		// same biff config and reach the same relay.
+		const envCwd = process.env.BIFF_CWD?.trim() ?? "";
+		const biffCwd = envCwd === "" ? findBiffCwd(process.cwd()) : envCwd;
 		await exec("tmux", [
 			"new-session",
 			"-d",
 			"-s",
 			peerSession,
+			...(biffCwd ? ["-c", biffCwd] : []),
 			`biff session end ${peerTty} >/dev/null 2>&1; ` +
 				`biff session new --tty ${peerTty} >/dev/null && exec biff --session ${peerTty}`,
 		]);
@@ -128,6 +134,8 @@ class RelayFixture {
 
 const integrationEnabled = process.env.BIFF_INTEGRATION === "1";
 
+// Each test creates and ends real biff sessions (a few seconds per relay round
+// trip, more on a loaded machine), so they get 60 s each.
 describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () => {
 	let fixture: RelayFixture | undefined;
 
@@ -136,11 +144,12 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 	afterEach(async () => {
 		await fixture?.cleanup();
 		fixture = undefined;
-	}, 30_000);
+	}, 60_000);
 
 	it("starts an isolated identity and shuts it down", async () => {
 		fixture = await RelayFixture.start();
-		expect(fixture.statuses).toContain("biff: connected");
+		// "biff: connected", or "biff: connected (demo relay)" with no biff config.
+		expect(fixture.statuses.some((s) => s.startsWith("biff: connected"))).toBe(true);
 		expect(await fixture.tool("biff_status")).toContain(`session: pi-${String(process.pid)}`);
 		const who = await fixture.tool("biff_who");
 		expect(who).toContain(fixture.peerTty);
@@ -148,7 +157,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 
 		await fixture.shutdownBridge();
 		expect(await sessionExists(bridgeSession)).toBe(false);
-	}, 30_000);
+	}, 60_000);
 
 	it("reports presence, plan, and login history", async () => {
 		fixture = await RelayFixture.start();
@@ -162,7 +171,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 			}),
 		).toContain(fixture.user);
 		expect(await fixture.tool("biff_plan", { clear: true })).toBe("Plan:");
-	}, 30_000);
+	}, 60_000);
 
 	it("changes message and TTY session controls", async () => {
 		fixture = await RelayFixture.start();
@@ -173,7 +182,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		expect(await fixture.tool("biff_tty", { name: `pi-${String(process.pid)}` })).toContain(
 			`pi-${String(process.pid)}`,
 		);
-	}, 30_000);
+	}, 60_000);
 
 	it("posts, reads, and clears the wall", async () => {
 		fixture = await RelayFixture.start();
@@ -192,7 +201,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 			await fixture.tool("biff_wall", { action: "clear" });
 		}
 		expect(await fixture.tool("biff_wall", { action: "read" })).toContain("No active wall");
-	}, 30_000);
+	}, 60_000);
 
 	it("sends messages with quotes and line breaks intact", async () => {
 		fixture = await RelayFixture.start();
@@ -215,7 +224,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		expect(await fixture.tool("biff_plan", { text: plan })).toContain("Plan:");
 		expect(await fixture.tool("biff_finger", { user: fixture.bridgeAddress })).toContain(plan);
 		await fixture.tool("biff_plan", { clear: true });
-	}, 40_000);
+	}, 60_000);
 
 	it("exchanges direct messages and reports unread mail", async () => {
 		fixture = await RelayFixture.start();
@@ -244,7 +253,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		expect(fixture.statuses.some((status) => /biff: \d+ unread/.test(status))).toBe(true);
 		expect(fixture.wakes.some((wake) => wake.includes("Biff inbox update"))).toBe(true);
 		expect(await fixture.tool("biff_read")).toContain(inbound);
-	}, 40_000);
+	}, 60_000);
 
 	it("conducts talk with the bridge as inviter", async () => {
 		fixture = await RelayFixture.start();
@@ -279,7 +288,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		expect(talkEnd).toContain("ended");
 		await waitForPaneText(fixture.peerSession, "ended", 5000);
 		expect(await fixture.tool("biff_timestamps", { value: "off" })).toBe("Timestamps off.");
-	}, 40_000);
+	}, 60_000);
 
 	it("conducts talk with the bridge as accepter", async () => {
 		fixture = await RelayFixture.start();
@@ -308,7 +317,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		await sendKeysLiteral(fixture.peerSession, "end");
 		expect(await fixture.tool("biff_talk_read", { timeoutMs: 5000 })).toContain("ended");
 		expect(await fixture.tool("biff_status")).toContain("relay:");
-	}, 40_000);
+	}, 60_000);
 
 	it("rejects invalid talk state and cancels a pending invite", async () => {
 		fixture = await RelayFixture.start();
@@ -331,7 +340,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		expect(cancelled).not.toContain("Failed:");
 		expect(cancelled).toContain("cancelled");
 		expect(await fixture.tool("biff_status")).toContain("relay:");
-	}, 40_000);
+	}, 60_000);
 });
 
 async function sendAndWaitForPaneText(

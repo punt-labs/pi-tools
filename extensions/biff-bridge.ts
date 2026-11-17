@@ -3,7 +3,8 @@ import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { capturePane, sendAndWait } from "../lib/tmux-wait.js";
 import { biffLine, checkToken, flattenText } from "../lib/biff-args.js";
-import { findBiffCwd } from "../lib/biff-config.js";
+import { findBiffCwd, hasBiffConfig } from "../lib/biff-config.js";
+import { createOwnedSession, endSession } from "../lib/biff-session.js";
 import { isTalkHangup } from "../lib/biff-talk.js";
 import { wakeScheduler } from "../lib/wake-scheduler.js";
 
@@ -26,6 +27,14 @@ function biffCwdFromEnv(): string | undefined {
 }
 
 const BIFF_CWD = biffCwdFromEnv() ?? findBiffCwd(process.cwd());
+
+// Whether biff will fall back to its public demo relay: no config where it
+// starts (an explicit BIFF_CWD is checked too, since it may point at an
+// unconfigured directory), and no BIFF_RELAY_URL override in the environment.
+const ON_DEMO_RELAY =
+	!(BIFF_CWD !== undefined && hasBiffConfig(BIFF_CWD)) &&
+	(process.env.BIFF_RELAY_URL?.trim() ?? "") === "";
+const CONNECTED_STATUS = ON_DEMO_RELAY ? "biff: connected (demo relay)" : "biff: connected";
 const STARTUP_TIMEOUT_MS = 15_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -65,63 +74,87 @@ async function restartOwnedRepl(): Promise<void> {
 			}
 			if (await tmuxSessionExists()) await tmux("kill-session", "-t", KEEP_SESSION);
 		}
-		// Reattach to the session we already own (created under BIFF_TTY).
-		const startupError = await ensureBiffRepl("reattach");
+		// Reattaches to the session we already own (ownedSessionId is kept).
+		const startupError = await ensureBiffRepl();
 		if (startupError) throw new Error(startupError);
 	});
 }
 
-// A bare `biff` attaches to the session this repo's pointer names, so two
-// bridges (or a bridge and a test peer) in one repo shared one session, and
-// each restart reused an old one: `who` then listed stale ttys, and messages to
-// a peer landed in the shared mailbox instead of its session. The bridge now
-// owns its session outright: end any leftover with our name, create a fresh
-// one, and attach to it (`biff session end` again at shutdown).
-function ownedSessionCommand(): string {
-	return (
-		`biff session end ${BIFF_TTY} >/dev/null 2>&1; ` +
-		`biff session new --tty ${BIFF_TTY} >/dev/null && exec biff --session ${BIFF_TTY}`
-	);
+// The bridge owns its Biff session: created fresh at startup (lib/biff-session),
+// attached by its stable id, and ended at shutdown. Using the id rather than
+// the `pi-<pid>` name keeps reattach and shutdown working after `biff_tty`
+// renames the session. A bare `biff` would instead attach to the repository's
+// default session, shared with anyone else running biff in that repository.
+let ownedSessionId = "";
+
+// Serialises session ownership with shutdown, so a startup that is still
+// creating the session can't leave one behind after shutdown has run.
+let lifecycle: Promise<void> = Promise.resolve();
+let shuttingDown = false;
+// A function, not a direct read, because the flag changes while startup awaits
+// the relay; reading it through a call keeps that visible to the type checker.
+function isShuttingDown(): boolean {
+	return shuttingDown;
 }
 
-// After a talk the REPL is rebuilt, but the Biff session itself is still ours
-// and live: reattach to it rather than ending and recreating it, which costs
-// two relay round trips (several seconds) for no benefit.
-function reattachCommand(): string {
-	return `exec biff --session ${BIFF_TTY}`;
+function biffOpts(): { cwd: string | undefined } {
+	return { cwd: BIFF_CWD };
 }
 
 async function endOwnedSession(): Promise<void> {
-	try {
-		const cwd = BIFF_CWD ? { cwd: BIFF_CWD } : {};
-		await exec("biff", ["session", "end", BIFF_TTY], { ...cwd, timeout: 10_000 });
-	} catch {
-		// Already ended, or never created: nothing to clean up.
-	}
+	const id = ownedSessionId;
+	ownedSessionId = "";
+	await endSession(biffOpts(), id);
 }
 
-async function ensureBiffRepl(mode: "fresh" | "reattach" = "fresh"): Promise<string | null> {
+// Start the REPL attached to the owned session, creating the session first if
+// the bridge doesn't own one yet. The relay round trips happen before the
+// prompt wait starts, so a slow relay can't eat into the REPL's startup time.
+async function ensureBiffRepl(): Promise<string | null> {
 	try {
 		await tmux("has-session", "-t", KEEP_SESSION);
 		return null;
 	} catch {
 		// session does not exist, start it
 	}
+	if (isShuttingDown()) return "the Pi session is shutting down";
 	try {
+		if (!ownedSessionId) ownedSessionId = await createOwnedSession(biffOpts(), BIFF_TTY);
+		if (isShuttingDown()) {
+			await endOwnedSession();
+			return "the Pi session is shutting down";
+		}
 		const cwdArgs = BIFF_CWD ? ["-c", BIFF_CWD] : [];
-		const command = mode === "fresh" ? ownedSessionCommand() : reattachCommand();
-		await tmux("new-session", "-d", "-s", KEEP_SESSION, ...cwdArgs, command);
-		// wait for initial REPL startup and prompt
+		await tmux(
+			"new-session",
+			"-d",
+			"-s",
+			KEEP_SESSION,
+			...cwdArgs,
+			`biff --session ${ownedSessionId}`,
+		);
+		// Keep the pane if biff exits, so its error can be reported.
+		await tmux("set-option", "-t", KEEP_SESSION, "remain-on-exit", "on");
 		const deadline = Date.now() + STARTUP_TIMEOUT_MS;
 		while (Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			const r = await tmux("capture-pane", "-t", KEEP_SESSION, "-p");
 			if (BIFF_PROMPT.test(r.stdout)) return null;
+			const dead = await tmux("display-message", "-p", "-t", KEEP_SESSION, "#{pane_dead}");
+			if (dead.stdout.trim() === "1") {
+				await tmux("kill-session", "-t", KEEP_SESSION).catch(() => undefined);
+				return "biff exited: " + lastLines(r.stdout);
+			}
 		}
-		return "biff REPL did not show prompt within 15s";
+		await tmux("kill-session", "-t", KEEP_SESSION).catch(() => undefined);
+		return `biff REPL did not show prompt within ${String(STARTUP_TIMEOUT_MS / 1000)}s`;
 	} catch (error) {
 		return error instanceof Error ? error.message : String(error);
 	}
+}
+
+function lastLines(text: string): string {
+	return text.trim().split("\n").slice(-3).join(" / ");
 }
 
 function enqueueCommand<T>(operation: () => Promise<T>): Promise<T> {
@@ -269,30 +302,37 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		// A fresh Pi session must re-announce any standing unread mail, so clear the
 		// baseline that suppresses duplicate notifications within a single session.
 		lastUnreadNotified = 0;
-		const err = await ensureBiffRepl();
+		shuttingDown = false;
+		const start = lifecycle.then(async () => {
+			const startError = await ensureBiffRepl();
+			// A failed start must not leave a live session behind in `biff who`.
+			if (startError) await endOwnedSession();
+			return startError;
+		});
+		lifecycle = start.then(() => undefined);
+		const err = await start;
 		if (err) {
 			ctx.ui.notify("biff-bridge: could not start biff REPL: " + err, "warning");
 			return;
 		}
 
-		// Each Pi process owns a distinct biff session (created with BIFF_TTY as its
-		// name by ownedSessionCommand), so no `tty` rename is needed here.
+		// The owned session is created under BIFF_TTY, so no `tty` rename is needed.
 
 		// If the session shut down while we were starting up, do not install a
 		// poll timer that would outlive this session (session_shutdown already ran
 		// and cannot clear a timer created afterwards).
 		if (generation !== sessionGeneration) return;
 
-		if (!BIFF_CWD) {
+		if (ON_DEMO_RELAY) {
 			ctx.ui.notify(
 				"biff-bridge: no .punt-labs/biff config in " +
-					process.cwd() +
-					" or its parents, so biff uses its public demo relay. " +
+					(BIFF_CWD ?? process.cwd() + " or its parents") +
+					", so biff uses its public demo relay. " +
 					"Set BIFF_CWD to a directory with your team's biff config.",
 				"warning",
 			);
 		}
-		ctx.ui.setStatus("biff", BIFF_CWD ? "biff: connected" : "biff: connected (demo relay)");
+		ctx.ui.setStatus("biff", CONNECTED_STATUS);
 
 		pollTimer = setInterval(() => {
 			void pollUnread(ctx, generation);
@@ -300,6 +340,7 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		shuttingDown = true;
 		sessionGeneration += 1;
 		wakeScheduler.shutdown();
 		talkMode = "idle";
@@ -325,7 +366,9 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			// The REPL may already have exited.
 		} finally {
 			// End the session so it doesn't linger in `biff who` as a stale tty.
-			await endOwnedSession();
+			// Chained after any startup still creating it, so neither can outlive shutdown.
+			lifecycle = lifecycle.then(endOwnedSession);
+			await lifecycle;
 		}
 	});
 
@@ -757,16 +800,8 @@ async function pollUnread(
 				});
 			}
 		} else {
-			if (!BIFF_CWD) {
-				ctx.ui.notify(
-					"biff-bridge: no .punt-labs/biff config in " +
-						process.cwd() +
-						" or its parents, so biff uses its public demo relay. " +
-						"Set BIFF_CWD to a directory with your team's biff config.",
-					"warning",
-				);
-			}
-			ctx.ui.setStatus("biff", BIFF_CWD ? "biff: connected" : "biff: connected (demo relay)");
+			// The demo-relay warning is shown once, at session_start; only the status here.
+			ctx.ui.setStatus("biff", CONNECTED_STATUS);
 		}
 		lastUnreadNotified = count;
 	} catch {
