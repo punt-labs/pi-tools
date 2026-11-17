@@ -203,9 +203,22 @@ The bridge **owns** its Biff session rather than attaching to whatever the
 repo's pointer names. A bare `biff` attaches to the repo's pointed session, so
 two bridges (or a bridge and a test peer) in one repo shared one session, and
 each restart reused an old one: `biff who` listed stale TTYs, and messages to
-a peer landed in the shared mailbox. The bridge now ends any leftover session
-named `pi-<pid>`, runs `biff session new --tty pi-<pid>`, attaches with
-`biff --session pi-<pid>`, and runs `biff session end` at shutdown.
+a peer landed in the shared mailbox. `lib/biff-session.ts` now:
+
+- ends any leftover live session named `pi-<pid>` and creates a fresh one,
+  keeping its stable id (`cli-…`);
+- restores the repository's previous default session afterwards, because
+  `biff session new` also makes the new session the default, which would put
+  a person running bare `biff` in the same repo into the bridge's mailbox;
+- attaches with `biff --session <id>` and ends `<id>` at shutdown, so both
+  still work after `biff_tty` renames the session;
+- does the relay round trips before the REPL's startup wait begins;
+- ends the session if the REPL then fails to start, and is serialised with
+  shutdown so a startup still in flight can't leave a session behind.
+
+The demo-relay warning is shown once per session, and also applies when
+`BIFF_CWD` names a directory without a Biff config. A `BIFF_RELAY_URL`
+override counts as a configured relay.
 
 ### Arguments to the Biff REPL
 
@@ -222,9 +235,11 @@ quotation`. `lib/biff-args.ts` builds every command line:
   would turn them into extra keystrokes.
 
 After a talk ends the REPL is rebuilt and reattaches to the session it already
-owns (`biff --session pi-<pid>`) instead of ending and recreating it. A talk
-counts as ended on either of Biff's two closing lines: the partner's
-"has ended the conversation." or the REPL's own "Talk with … ended.".
+owns instead of ending and recreating it. A talk counts as ended on either of
+Biff's two closing lines, matched as whole lines only: the partner's
+`▶  USER has ended the conversation.` or the REPL's own
+`Talk with USER ended.`. A partner typing those words in a talk message does
+not end it.
 
 ### ADR-004 Consequences
 
