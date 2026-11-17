@@ -24,6 +24,20 @@ describe("withRepoLock", () => {
 		]).toContainEqual(events);
 	});
 
+	it("lets a third caller in while two hold it in turn", async () => {
+		const order: number[] = [];
+		await Promise.all(
+			[1, 2, 3].map((n) =>
+				withRepoLock({ cwd: process.cwd() }, async () => {
+					order.push(n);
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					order.push(-n);
+				}),
+			),
+		);
+		for (let i = 0; i < order.length; i += 2) expect(order[i + 1]).toBe(-order[i]);
+	});
+
 	it("releases the lock when the callback throws", async () => {
 		await expect(
 			withRepoLock({ cwd: process.cwd() }, () => Promise.reject(new Error("boom"))),

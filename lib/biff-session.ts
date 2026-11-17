@@ -9,16 +9,16 @@
 //
 // Two bridges starting together would otherwise race: B could read A's
 // temporary session as "the previous default" and put it back. The whole
-// read, create, restore sequence therefore holds a per-repository lock that
-// every bridge (and the integration peers) takes. A person running
+// read, create, restore sequence therefore holds a per-repository OS lock
+// (flock) that every bridge (and the integration peers) takes. A person running
 // `biff session use` meanwhile doesn't take the lock, so the restore only
 // writes when the pointer still names the bridge's new session; the
 // remaining window is the moment between that check and the write. Any failure to read
 // or restore is reported as a warning rather than ignored. The real fix is a
 // `biff session new` option that leaves the pointer alone (biff issue PL-1137).
 
-import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -130,11 +130,8 @@ export async function createOwnedSession(
 }
 
 const LOCK_WAIT_MS = 60_000;
-// Longer than any create sequence (relay timeout plus pointer scripts), so a
-// lock this old was left by a process that died mid-sequence.
-const LOCK_STALE_MS = 3 * RELAY_TIMEOUT_MS;
 
-/** Lock directory shared by every bridge working in the same repository. */
+/** Lock file shared by every bridge working in the same repository. */
 async function repoLockPath(opts: BiffSessionOptions): Promise<string> {
 	let key: string;
 	try {
@@ -153,35 +150,41 @@ async function repoLockPath(opts: BiffSessionOptions): Promise<string> {
 	return join(tmpdir(), `biff-bridge-session-${digest}.lock`);
 }
 
+// Holds an exclusive flock on argv[1] until stdin closes. The kernel drops the
+// lock when this process exits for any reason, so a crashed holder never
+// leaves a stale lock and nobody else can release it.
+const LOCK_SCRIPT = `
+import fcntl, sys
+with open(sys.argv[1], "a") as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    print("locked", flush=True)
+    sys.stdin.read()
+`;
+
 /**
- * Run `fn` holding a per-repository lock (an atomic mkdir). A lock older
- * than LOCK_STALE_MS is taken over; if the lock can't be had within
- * LOCK_WAIT_MS, `fn` runs anyway, so a stuck lock costs isolation, not startup.
+ * Run `fn` holding a per-repository OS lock (flock, held by a small child
+ * process running biff's Python). If the lock can't be had within
+ * LOCK_WAIT_MS, `fn` runs anyway, so a stuck holder costs isolation, not startup.
  */
 export async function withRepoLock<T>(opts: BiffSessionOptions, fn: () => Promise<T>): Promise<T> {
-	const lock = await repoLockPath(opts);
-	const deadline = Date.now() + LOCK_WAIT_MS;
-	let held = false;
-	while (!held && Date.now() < deadline) {
-		try {
-			await mkdir(lock);
-			held = true;
-		} catch {
-			const created = await stat(lock).then(
-				(info) => info.mtimeMs,
-				() => 0,
-			);
-			if (created > 0 && Date.now() - created > LOCK_STALE_MS) {
-				await rm(lock, { recursive: true, force: true });
-				continue;
-			}
-			await new Promise((resolve) => setTimeout(resolve, 200));
-		}
-	}
+	const holder = spawn(await biffPython(), ["-c", LOCK_SCRIPT, await repoLockPath(opts)], {
+		stdio: ["pipe", "pipe", "ignore"],
+	});
 	try {
+		await new Promise<void>((resolve) => {
+			const timer = setTimeout(resolve, LOCK_WAIT_MS);
+			const done = () => {
+				clearTimeout(timer);
+				resolve();
+			};
+			holder.stdout.once("data", done);
+			holder.once("exit", done);
+			holder.once("error", done);
+		});
 		return await fn();
 	} finally {
-		if (held) await rm(lock, { recursive: true, force: true });
+		holder.stdin.end();
+		holder.kill();
 	}
 }
 

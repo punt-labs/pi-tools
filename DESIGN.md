@@ -210,12 +210,14 @@ a peer landed in the shared mailbox. `lib/biff-session.ts` now:
 - restores the repository's previous default session afterwards, because
   `biff session new` also makes the new session the default, which would put
   a person running bare `biff` in the same repo into the bridge's mailbox.
-  Bridges in one repository hold a shared lock (an atomic `mkdir` in the
-  temp directory, taken over after 60 s) across the read, create and
-  restore, so one bridge never saves another's temporary session as the
-  default. The restore only writes if the pointer still names the bridge's
-  new session, so a concurrent `biff session use` wins. A failure to read or
-  restore the pointer is shown as a warning;
+  Bridges in one repository hold a shared OS lock (`flock` on a file in the
+  temp directory, held by a small child process) across the read, create
+  and restore, so one bridge never saves another's temporary session as the
+  default. The kernel releases it when the holder exits, so a crash can't
+  leave a stale lock and no bridge ever removes another's. The restore only
+  writes if the pointer still names the bridge's new session, so a
+  concurrent `biff session use` wins. A failure to read or restore the
+  pointer is shown as a warning;
 - attaches with `biff --session <id>` and ends `<id>` at shutdown, so both
   still work after `biff_tty` renames the session;
 - does the relay round trips before the REPL's startup wait begins;
