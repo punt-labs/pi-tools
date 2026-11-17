@@ -77,13 +77,15 @@ else:
     (pointer.root / pointer.repo_key(repo)).unlink(missing_ok=True)
 `;
 
-// Python helpers run with -I (isolated mode): they start in the repository,
-// and without it a checked-in `biff.py` or `biff/` there would shadow the
-// installed package. -I also ignores PYTHON* environment variables.
+// Python helpers run with -P -E. They start in the repository, and -P keeps
+// that directory off sys.path, so a checked-in `biff.py` or `biff/` can't
+// shadow the installed package; -E ignores PYTHON* variables (PYTHONPATH).
+// Not -I: it also drops user site-packages, where `pip install --user`
+// puts biff. -P needs Python 3.11; biff requires 3.13.
 async function runPointerScript(opts: BiffSessionOptions, args: string[]): Promise<string> {
 	const python = await biffPython();
 	try {
-		const { stdout } = await exec(python, ["-I", "-c", POINTER_SCRIPT, ...args], {
+		const { stdout } = await exec(python, ["-P", "-E", "-c", POINTER_SCRIPT, ...args], {
 			cwd: opts.cwd,
 			timeout: 10_000,
 		});
@@ -169,7 +171,7 @@ sys.stdin.read()
  * bridge's session as the repository default.
  */
 export async function withRepoLock<T>(opts: BiffSessionOptions, fn: () => Promise<T>): Promise<T> {
-	const holder = spawn(await biffPython(), ["-I", "-c", LOCK_SCRIPT], {
+	const holder = spawn(await biffPython(), ["-P", "-E", "-c", LOCK_SCRIPT], {
 		cwd: opts.cwd,
 		stdio: ["pipe", "pipe", "pipe"],
 	});
