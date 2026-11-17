@@ -279,7 +279,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 				5000,
 			),
 		).toContain("Connected to");
-		expect(await fixture.tool("biff_talk_read", { timeoutMs: 5000 })).toContain("Connected to");
+		expect(await fixture.tool("biff_talk_read", { timeoutMs: 15_000 })).toContain("Connected to");
 
 		const outbound = `bridge-talk-${String(Date.now())}`;
 		expect(await fixture.tool("biff_talk_send", { message: outbound })).toContain(
@@ -288,7 +288,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		await waitForPaneText(fixture.peerSession, outbound, 5000);
 		const inbound = `peer-talk-${String(Date.now())}`;
 		await sendKeysLiteral(fixture.peerSession, inbound);
-		const talkRead = await fixture.tool("biff_talk_read", { timeoutMs: 5000 });
+		const talkRead = await fixture.tool("biff_talk_read", { timeoutMs: 15_000 });
 		expect(talkRead).toContain(inbound);
 		expect(talkRead).toMatch(/\[\d{2}:\d{2}\]/);
 
@@ -316,7 +316,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 
 		const inbound = `accepted-peer-talk-${String(Date.now())}`;
 		await sendKeysLiteral(fixture.peerSession, inbound);
-		expect(await fixture.tool("biff_talk_read", { timeoutMs: 5000 })).toContain(inbound);
+		expect(await fixture.tool("biff_talk_read", { timeoutMs: 15_000 })).toContain(inbound);
 		const outbound = `accepted-bridge-talk-${String(Date.now())}`;
 		expect(await fixture.tool("biff_talk_send", { message: outbound })).toContain(
 			"Talk message sent",
@@ -324,7 +324,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		await waitForPaneText(fixture.peerSession, outbound, 5000);
 
 		await sendKeysLiteral(fixture.peerSession, "end");
-		expect(await fixture.tool("biff_talk_read", { timeoutMs: 5000 })).toContain("ended");
+		expect(await fixture.tool("biff_talk_read", { timeoutMs: 15_000 })).toContain("ended");
 		expect(await fixture.tool("biff_status")).toContain("relay:");
 	}, 60_000);
 

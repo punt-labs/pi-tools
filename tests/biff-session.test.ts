@@ -99,5 +99,8 @@ describe.skipIf(!integrationEnabled)("owned biff session", () => {
 		} finally {
 			await endSession(opts, id);
 		}
+		// Ending it again, or ending a name that never existed, is not an error.
+		await expect(endSession(opts, id)).resolves.toBeUndefined();
+		await expect(endSession(opts, `missing-${String(process.pid)}`)).resolves.toBeUndefined();
 	}, 60_000);
 });

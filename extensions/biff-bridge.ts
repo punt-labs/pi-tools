@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -108,10 +108,14 @@ function biffOpts(): { cwd: string | undefined } {
 	return { cwd: BIFF_CWD };
 }
 
+// Clears the id only once biff has ended the session, so a failure (relay
+// down) keeps it for a later retry instead of losing the only handle on a
+// session that may since have been renamed.
 async function endOwnedSession(): Promise<void> {
 	const id = ownedSessionId;
-	ownedSessionId = "";
+	if (!id) return;
 	await endSession(biffOpts(), id);
+	if (ownedSessionId === id) ownedSessionId = "";
 }
 
 // Start the REPL attached to the owned session, creating the session first if
@@ -141,7 +145,11 @@ async function ensureBiffRepl(): Promise<string | null> {
 		const script =
 			'exec 2> >(tee "$1" >&2); tee_pid=$!; biff --session "$2"; status=$?; ' +
 			"exec 2>&-; wait $tee_pid; exit $status";
-		await rm(STARTUP_LOG, { force: true });
+		const log = await startupLogPath();
+		await rm(log, { force: true });
+		// Shutdown may have started during those awaits; don't launch a REPL
+		// that nothing would then stop.
+		if (isShuttingDown()) return "the Pi session is shutting down";
 		await tmux(
 			"new-session",
 			"-d",
@@ -152,7 +160,7 @@ async function ensureBiffRepl(): Promise<string | null> {
 			"-c",
 			script,
 			"biff-bridge",
-			STARTUP_LOG,
+			log,
 			ownedSessionId,
 		);
 		const deadline = Date.now() + STARTUP_TIMEOUT_MS;
@@ -171,10 +179,23 @@ async function ensureBiffRepl(): Promise<string | null> {
 	}
 }
 
-const STARTUP_LOG = join(tmpdir(), `biff-bridge-${String(process.pid)}.log`);
+// The startup log lives in a private directory (mkdtemp, mode 0700), so no
+// other local user can plant a symlink at its path for tee to follow.
+let startupLogDir: string | undefined;
+async function startupLogPath(): Promise<string> {
+	startupLogDir ??= await mkdtemp(join(tmpdir(), "biff-bridge-"));
+	return join(startupLogDir, "startup.log");
+}
+async function removeStartupLog(): Promise<void> {
+	const dir = startupLogDir;
+	startupLogDir = undefined;
+	if (dir) await rm(dir, { recursive: true, force: true });
+}
 
 async function startupError(): Promise<string> {
-	const text = await readFile(STARTUP_LOG, "utf8").catch(() => "");
+	const text = startupLogDir
+		? await readFile(join(startupLogDir, "startup.log"), "utf8").catch(() => "")
+		: "";
 	return lastLines(text) || "no error output";
 }
 
@@ -332,8 +353,13 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		const start = lifecycle.then(async () => {
 			const startError = await ensureBiffRepl();
 			// A failed start must not leave a live session behind in `biff who`.
-			if (startError) await endOwnedSession();
-			return startError;
+			if (!startError) return startError;
+			try {
+				await endOwnedSession();
+				return startError;
+			} catch (error) {
+				return `${startError}; ${errorMessage(error)}`;
+			}
 		});
 		lifecycle = start.then(() => undefined);
 		const err = await start;
@@ -398,9 +424,16 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 		} finally {
 			// End the session so it doesn't linger in `biff who` as a stale tty.
 			// Chained after any startup still creating it, so neither can outlive shutdown.
-			lifecycle = lifecycle.then(endOwnedSession);
+			// Chained after any startup still in flight. That startup may have
+			// launched a REPL after the teardown above, so kill it here too.
+			lifecycle = lifecycle.then(async () => {
+				await tmux("kill-session", "-t", KEEP_SESSION).catch(() => undefined);
+				await endOwnedSession().catch((error: unknown) => {
+					console.error(`biff-bridge: ${errorMessage(error)}`);
+				});
+				await removeStartupLog();
+			});
 			await lifecycle;
-			await rm(STARTUP_LOG, { force: true });
 		}
 	});
 

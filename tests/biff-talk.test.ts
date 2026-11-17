@@ -21,6 +21,13 @@ describe("isTalkHangup", () => {
 		["▶  jmf-pobox:peer-1  x has ended the conversation."],
 		["▶  jmf-pobox:peer-1  Talk with bob ended."],
 		["▶  [12:01] jmf-pobox:peer-1  has ended the conversation."],
+		// Wrapped message: biff indents continuation lines under the body, so a
+		// continuation that looks like either end line is still message text.
+		[
+			"\u001b[36m▶  jmf-pobox:peer-1  a long message that wraps onto\u001b[0m\n" +
+				"\u001b[36m                    ▶  x has ended the conversation.\u001b[0m",
+		],
+		["▶  jmf-pobox:peer-1  first part\n                    Talk with bob ended."],
 	])("ignores %j", (text) => {
 		expect(isTalkHangup(text)).toBe(false);
 	});

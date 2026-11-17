@@ -218,7 +218,7 @@ async function createUnlocked(opts: BiffSessionOptions, tty: string): Promise<Ow
 	} catch (error) {
 		warning = "could not read the repository's default biff session: " + messageOf(error);
 	}
-	await endSession(opts, tty);
+	await endSession(opts, tty).catch(() => undefined);
 	// Ids that existed before creation, so an ambiguous failure can't mistake
 	// an older record with the same name (in any repository) for ours.
 	const before = await liveSessionIds(opts).catch(() => undefined);
@@ -278,7 +278,11 @@ async function undoAmbiguousCreate(
 	} catch (error) {
 		problems.push(`could not restore the default session: ${messageOf(error)}`);
 	}
-	await endSession(opts, id);
+	try {
+		await endSession(opts, id);
+	} catch (error) {
+		problems.push(messageOf(error));
+	}
 	return problems.join("; ");
 }
 
@@ -329,12 +333,18 @@ function lastStderrLine(error: unknown): string {
 	return stderr ? (stderr.split("\n").pop() ?? stderr) : messageOf(error);
 }
 
-/** End a session by name or id; quietly does nothing if it isn't live. */
+/**
+ * End a session by name or id. Succeeds quietly when it doesn't exist or has
+ * already ended; any other failure (relay timeout, auth) is thrown, so the
+ * caller can keep the id and report it rather than leave a live session.
+ */
 export async function endSession(opts: BiffSessionOptions, ref: string): Promise<void> {
 	if (!ref) return;
 	try {
 		await exec("biff", ["session", "end", ref], { cwd: opts.cwd, timeout: RELAY_TIMEOUT_MS });
-	} catch {
-		// Already ended, or never created.
+	} catch (error) {
+		const stderr = (error as { stderr?: string }).stderr ?? "";
+		if (/unknown session:| ended at /.test(stderr)) return;
+		throw new Error(`biff session end ${ref} failed: ${lastStderrLine(error)}`);
 	}
 }
