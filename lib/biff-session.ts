@@ -220,7 +220,13 @@ async function createUnlocked(opts: BiffSessionOptions, tty: string): Promise<Ow
 	} catch (error) {
 		warning = "could not read the repository's default biff session: " + messageOf(error);
 	}
-	await endSession(opts, tty).catch(() => undefined);
+	// A leftover live session with this name must go first: biff would refuse
+	// the name anyway, and starting without ending it would leave it online.
+	try {
+		await endSession(opts, tty);
+	} catch (error) {
+		throw new Error(`could not end the leftover biff session ${tty}: ${messageOf(error)}`);
+	}
 	// Ids that existed before creation, so an ambiguous failure can't mistake
 	// an older record with the same name (in any repository) for ours.
 	const before = await liveSessionIds(opts).catch(() => undefined);

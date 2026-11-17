@@ -117,6 +117,19 @@ class RelayFixture {
 		return result.content.map((item) => item.text).join("\n");
 	}
 
+	// biff_talk_read waits at most 10 s per call (the tool clamps it), so poll
+	// in short reads until `text` arrives or 30 s pass. Reads are deltas, so
+	// the outputs are joined.
+	async talkReadUntil(text: string, totalMs = 30_000): Promise<string> {
+		const deadline = Date.now() + totalMs;
+		let seen = "";
+		while (Date.now() < deadline) {
+			seen += "\n" + (await this.tool("biff_talk_read", { timeoutMs: 5_000 }));
+			if (seen.includes(text)) break;
+		}
+		return seen;
+	}
+
 	async peer(command: string): Promise<string> {
 		return sendAndWait(this.peerSession, command, prompt);
 	}
@@ -279,7 +292,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 				5000,
 			),
 		).toContain("Connected to");
-		expect(await fixture.tool("biff_talk_read", { timeoutMs: 15_000 })).toContain("Connected to");
+		expect(await fixture.talkReadUntil("Connected to")).toContain("Connected to");
 
 		const outbound = `bridge-talk-${String(Date.now())}`;
 		expect(await fixture.tool("biff_talk_send", { message: outbound })).toContain(
@@ -288,7 +301,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		await waitForPaneText(fixture.peerSession, outbound, 5000);
 		const inbound = `peer-talk-${String(Date.now())}`;
 		await sendKeysLiteral(fixture.peerSession, inbound);
-		const talkRead = await fixture.tool("biff_talk_read", { timeoutMs: 15_000 });
+		const talkRead = await fixture.talkReadUntil(inbound);
 		expect(talkRead).toContain(inbound);
 		expect(talkRead).toMatch(/\[\d{2}:\d{2}\]/);
 
@@ -297,7 +310,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		expect(talkEnd).toContain("ended");
 		await waitForPaneText(fixture.peerSession, "ended", 5000);
 		expect(await fixture.tool("biff_timestamps", { value: "off" })).toBe("Timestamps off.");
-	}, 60_000);
+	}, 120_000);
 
 	it("conducts talk with the bridge as accepter", async () => {
 		fixture = await RelayFixture.start();
@@ -316,7 +329,7 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 
 		const inbound = `accepted-peer-talk-${String(Date.now())}`;
 		await sendKeysLiteral(fixture.peerSession, inbound);
-		expect(await fixture.tool("biff_talk_read", { timeoutMs: 15_000 })).toContain(inbound);
+		expect(await fixture.talkReadUntil(inbound)).toContain(inbound);
 		const outbound = `accepted-bridge-talk-${String(Date.now())}`;
 		expect(await fixture.tool("biff_talk_send", { message: outbound })).toContain(
 			"Talk message sent",
@@ -324,9 +337,9 @@ describe.skipIf(!integrationEnabled)("biff bridge real-relay integration", () =>
 		await waitForPaneText(fixture.peerSession, outbound, 5000);
 
 		await sendKeysLiteral(fixture.peerSession, "end");
-		expect(await fixture.tool("biff_talk_read", { timeoutMs: 15_000 })).toContain("ended");
+		expect(await fixture.talkReadUntil("ended")).toContain("ended");
 		expect(await fixture.tool("biff_status")).toContain("relay:");
-	}, 60_000);
+	}, 120_000);
 
 	it("rejects invalid talk state and cancels a pending invite", async () => {
 		fixture = await RelayFixture.start();

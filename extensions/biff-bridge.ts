@@ -39,6 +39,7 @@ const ON_DEMO_RELAY =
 	!(BIFF_CWD !== undefined && hasBiffConfig(BIFF_CWD)) &&
 	(process.env.BIFF_RELAY_URL?.trim() ?? "") === "";
 const STARTUP_TIMEOUT_MS = 15_000;
+const SHUTDOWN_WAIT_MS = 5_000;
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let lastUnreadNotified = 0;
@@ -181,21 +182,21 @@ async function ensureBiffRepl(): Promise<string | null> {
 
 // The startup log lives in a private directory (mkdtemp, mode 0700), so no
 // other local user can plant a symlink at its path for tee to follow.
-let startupLogDir: string | undefined;
+// One promise, assigned synchronously, so overlapping starts share a single
+// directory rather than each creating one and overwriting the other's path.
+let startupLogDir: Promise<string> | undefined;
 async function startupLogPath(): Promise<string> {
-	startupLogDir ??= await mkdtemp(join(tmpdir(), "biff-bridge-"));
-	return join(startupLogDir, "startup.log");
+	startupLogDir ??= mkdtemp(join(tmpdir(), "biff-bridge-"));
+	return join(await startupLogDir, "startup.log");
 }
 async function removeStartupLog(): Promise<void> {
 	const dir = startupLogDir;
 	startupLogDir = undefined;
-	if (dir) await rm(dir, { recursive: true, force: true });
+	if (dir) await rm(await dir, { recursive: true, force: true }).catch(() => undefined);
 }
 
 async function startupError(): Promise<string> {
-	const text = startupLogDir
-		? await readFile(join(startupLogDir, "startup.log"), "utf8").catch(() => "")
-		: "";
+	const text = startupLogDir ? await readFile(await startupLogPath(), "utf8").catch(() => "") : "";
 	return lastLines(text) || "no error output";
 }
 
@@ -426,14 +427,22 @@ export default function biffBridgeExtension(pi: ExtensionAPI) {
 			// Chained after any startup still creating it, so neither can outlive shutdown.
 			// Chained after any startup still in flight. That startup may have
 			// launched a REPL after the teardown above, so kill it here too.
-			lifecycle = lifecycle.then(async () => {
+			const finalCleanup = async () => {
 				await tmux("kill-session", "-t", KEEP_SESSION).catch(() => undefined);
 				await endOwnedSession().catch((error: unknown) => {
 					console.error(`biff-bridge: ${errorMessage(error)}`);
 				});
 				await removeStartupLog();
-			});
-			await lifecycle;
+			};
+			lifecycle = lifecycle.then(finalCleanup);
+			// A startup stuck on the lock or a slow relay must not hold Pi's exit
+			// hostage. After SHUTDOWN_WAIT_MS, stop waiting: the chained cleanup
+			// still runs whenever that startup finishes, and startup checks the
+			// shutdown flag before launching anything.
+			await Promise.race([
+				lifecycle,
+				new Promise((resolve) => setTimeout(resolve, SHUTDOWN_WAIT_MS).unref()),
+			]);
 		}
 	});
 
