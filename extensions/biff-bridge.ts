@@ -355,14 +355,19 @@ function cancelReaper(): void {
 }
 
 // Detached, so it outlives Pi. Every REAPER_INTERVAL_S for REAPER_WINDOW_S it
-// kills the tmux REPL and tries to end the session, stopping once biff ends
-// it. Retrying covers a session created after Pi exits (a still-running
-// `biff session new`) and a relay that's briefly down.
+// kills the tmux REPL and tries to end the session. Retrying covers a session
+// created after Pi exits (a still-running `biff session new`) and a relay
+// that's briefly down.
+//
+// With the session's id it stops once that session is ended. With only the
+// `pi-<pid>` name (startup hadn't created it yet), ending some session by
+// that name proves nothing: it may be an older leftover. So it keeps going
+// for the whole window, ending whatever live session holds the name.
 function spawnShutdownReaper(): void {
 	const script =
 		'end=$(( $(date +%s) + $1 )); while [ "$(date +%s)" -lt "$end" ]; do ' +
 		'sleep "$2"; tmux kill-session -t "$3" 2>/dev/null; ' +
-		'biff session end "$4" >/dev/null 2>&1 && exit 0; done';
+		'biff session end "$4" >/dev/null 2>&1 && [ "$5" = id ] && exit 0; done';
 	const ref = ownedSessionId || BIFF_TTY;
 	const child = spawn(
 		"sh",
@@ -374,6 +379,7 @@ function spawnShutdownReaper(): void {
 			String(REAPER_INTERVAL_S),
 			KEEP_SESSION,
 			ref,
+			ownedSessionId ? "id" : "name",
 		],
 		{ cwd: BIFF_CWD, detached: true, stdio: "ignore" },
 	);
