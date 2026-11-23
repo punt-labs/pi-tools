@@ -8,10 +8,10 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-export const BIFF_CONFIG_FILES = ["config.yaml", "config.local.yaml"];
+const BIFF_CONFIG_FILES = ["config.yaml", "config.local.yaml"];
 
 /** The git root biff would use for `dir` (biff's own find_git_root rule). */
-export function gitRoot(dir: string): string | undefined {
+function gitRoot(dir: string): string | undefined {
 	let current = resolve(dir);
 	for (;;) {
 		if (existsSync(join(current, ".git"))) return current;

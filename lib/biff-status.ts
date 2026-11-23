@@ -22,7 +22,7 @@ export interface StatusStyle {
 	dim(text: string): string;
 }
 
-export const PLAIN_STYLE: StatusStyle = {
+const PLAIN_STYLE: StatusStyle = {
 	unread: (text) => text,
 	wall: (text) => text,
 	dim: (text) => text,
