@@ -35,7 +35,7 @@ export interface BiffSessionOptions {
  * The interpreter behind the `biff` command, from its shebang: an absolute
  * path (uv, pipx) or `/usr/bin/env <name>`. Throws when it can't be found.
  */
-export async function biffPython(): Promise<string> {
+async function biffPython(): Promise<string> {
 	const { stdout } = await exec("sh", ["-c", "command -v biff"]);
 	const launcher = stdout.trim();
 	const firstLine = (await readFile(launcher, "utf8")).split("\n", 1)[0];
@@ -104,7 +104,7 @@ export async function readDefaultSession(opts: BiffSessionOptions): Promise<stri
  * Point the repository's default session back at `previous`, but only if it
  * still names `expected`. Returns false when someone changed it meanwhile.
  */
-export async function restoreDefaultSession(
+async function restoreDefaultSession(
 	opts: BiffSessionOptions,
 	expected: string,
 	previous: string,

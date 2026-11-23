@@ -12,7 +12,7 @@ type Timer = ReturnType<typeof setTimeout>;
 // scheduler performs the final enqueue and self-cancel under the tick's token,
 // so a producer never has to touch cancel/enqueue itself (which would race an
 // in-flight tick against keep_stop or session_shutdown).
-export interface ProducerStop {
+interface ProducerStop {
 	stop: true;
 	wake?: ScheduledWake;
 }
