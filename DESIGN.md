@@ -629,7 +629,8 @@ UTF-8 bytes, independently of credential redaction in the preview.
   usage, or model cost. Fast output can still exhaust storage.
 - The 8 MiB transcript cap bounds retained child-process output, not shell
   output files, disk spill, or total worker runtime. It is not a disk quota.
-- Node.js 24, Bash, and POSIX process groups are required; GNU `timeout` is not.
+- Node.js 24, Bash, POSIX process groups, and `ps` are required; GNU `timeout`
+  is not.
   Linux execution is checked; macOS execution is not yet checked.
 - Processes that deliberately create another session can escape command-group
   supervision. This mechanism does not restrict same-user access or credentials.

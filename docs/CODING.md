@@ -157,7 +157,11 @@ carrying an `isError` field that the host may ignore.
 
 ## Shell limits and prerequisites
 
-The guard requires Node.js 24 or later, Bash on `PATH`, and POSIX process groups.
+The guard requires Node.js 24 or later, Bash through Pi's configured shell path
+or `PATH`, and POSIX process groups. It preserves the configured shell executable
+and command prefix using Pi's public settings API.
+POSIX `ps` must also be available to distinguish running group members from
+exited processes awaiting collection.
 It supervises each Bash command through Pi's command-execution operations in
 TypeScript rather than wrapping the command string with an external utility.
 GNU `timeout`, `gtimeout`, and Homebrew coreutils are not required. Linux

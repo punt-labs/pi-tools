@@ -12,7 +12,7 @@ checks are separate integration tiers with different prerequisites.
   tool registration, provider configuration, shell environments, and reporting.
   These are integration checks without a live provider or relay.
 - Local process tests: execute guarded shell commands, including termination
-  of a runaway command. Require Node.js 24, Bash, and POSIX process groups,
+  of a runaway command. Require Node.js 24, Bash, POSIX process groups, and `ps`,
   but no network or GNU `timeout`.
 - TS typecheck: all extensions and lib code compile cleanly.
   Automated.
@@ -83,6 +83,8 @@ The coder and guard tests also exercise extension registration and execution:
   behavior, on-disk file reporting, and failure paths through a fake Pi host
 - `bash-guard-extension.test.ts` — registered bash-tool behavior, timeout
   configuration, and removal of `PI_CODER_API_KEY` from shell environments
+- `bash-guard-settings.test.ts` — effective command prefixes, configured shell
+  wrappers, workspace selection, and credential filtering through the Bash tool
 
 These run under `make test` and `make check`. Controlled processes and fake
 hosts do not prove that a real Pi provider accepts the configuration or that
@@ -183,10 +185,6 @@ Pi process group. Captured stdout and stderr each have a 1,048,576-character
 test-harness limit. These harness limits are not production coder limits.
 Both streams use stateful UTF-8 decoding so split characters remain intact
 before event validation and credential redaction.
-
-Per-run diagnostic directories are intentionally retained for inspection.
-`make clean` preserves them; it removes build output and the legacy smoke file,
-not `.tmp/keep-smoke-*` or `.tmp/smoke-coder-*` diagnostics.
 
 Before retaining either artifact or printing diagnostics and metadata, the
 runner redacts the optional `PI_CODER_API_KEY` value, including its JSON-escaped

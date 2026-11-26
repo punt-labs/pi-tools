@@ -15,12 +15,12 @@ Its shell guard gives Pi bash commands a default time limit.
 ## Requirements
 
 - macOS or Linux
-- Node.js 24 or later and Bash on `PATH`
+- Node.js 24 or later and Bash through Pi's configured shell path or `PATH`
 - A compatible [Pi CLI](https://github.com/earendil-works/pi/tree/main/packages/coding-agent),
   tested with version **1.6.1**
 - [tmux](https://github.com/tmux/tmux/wiki)
 - [Biff](https://github.com/punt-labs/biff) only when using the Biff bridge
-- POSIX process groups when using the shell guard or coder
+- POSIX process groups and `ps` when using the shell guard or coder
 - A configured Pi provider and model when using `pi_coder`
 
 The coder and smoke runners require `--mode json`, `-p`, `-e`, `--offline`,
@@ -28,6 +28,7 @@ The coder and smoke runners require `--mode json`, `-p`, `-e`, `--offline`,
 `--no-skills`, `--no-prompt-templates`, and `--no-mcp`. Explicit `-e` files must
 still load when extension discovery is disabled. Other CLI releases must
 support this behavior; version numbers alone do not prove compatibility.
+The guard also requires Pi's public `getSettings` API for shell settings.
 
 Ensure the intended `pi` executable is first on `PATH`. A development SDK can
 expose a different CLI: the SDK-provided CLI 0.84.1 rejects `--no-mcp` and is not
@@ -121,8 +122,10 @@ contract and configuration example.
 ### `bash-guard`
 
 Replace Pi's bash tool with one that supervises each command in its own detached
-POSIX process group. `PI_BASH_TIMEOUT_S` accepts a positive finite number of
-seconds within Node's timer ceiling; missing or invalid values use 120 seconds.
+POSIX process group, preserving Pi's configured shell executable and command
+prefix in the active workspace. `PI_BASH_TIMEOUT_S` accepts a positive finite
+number of seconds within Node's timer ceiling; missing or invalid values use
+120 seconds.
 The deadline sends TERM, followed by KILL after 10 seconds if needed. A shorter
 per-call timeout still applies; a longer one cannot extend the guard's ceiling.
 Command exit kills background members of the owned group, and cancellation

@@ -41,6 +41,8 @@ Changes are grouped under Unreleased until the first tagged release.
 
 ### Fixed
 
+- Guarded Bash preserves Pi's effective shell executable and command prefix,
+  and remaining descendants retain the full deadline TERM-to-KILL grace.
 - The keep smoke bounds the actual Pi process instead of attempting to run
   the shell builtin `wait` through `timeout`. It preserves nonzero Pi exits,
   escalates timeout termination, creates its artifact directory, and cleans
