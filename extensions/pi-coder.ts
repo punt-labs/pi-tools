@@ -111,7 +111,11 @@ function runCoder(
 
 function redactCredential(text: string): string {
 	const credential = process.env.PI_CODER_API_KEY;
-	return credential ? text.replaceAll(credential, "[REDACTED]") : text;
+	if (!credential) return text;
+	// Redact the JSON representation before the literal can change overlapping matches.
+	return text
+		.replaceAll(JSON.stringify(credential).slice(1, -1), "[REDACTED]")
+		.replaceAll(credential, "[REDACTED]");
 }
 
 function textResult(text: string, details: Record<string, unknown> = {}) {

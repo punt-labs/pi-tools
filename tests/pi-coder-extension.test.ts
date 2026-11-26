@@ -235,6 +235,40 @@ describe("pi_coder execution contract", () => {
 		expect(JSON.stringify(result)).not.toContain("fake-echoed-coder-key");
 	});
 
+	it("redacts literal and JSON-escaped fake credentials from failed child diagnostics", async () => {
+		const fakeKey = 'fake-"quoted"\\coder-key';
+		const escapedKey = JSON.stringify(fakeKey).slice(1, -1);
+		vi.stubEnv("PI_CODER_API_KEY", fakeKey);
+		fakeChild("", 1, "literal: " + fakeKey + "\n" + JSON.stringify({ rejectedKey: fakeKey }));
+		const message = await failureMessage(
+			registeredTool().execute("1", { task: "write it", target_path: "out.ts" }),
+		);
+		expect(message).not.toContain(fakeKey);
+		expect(message).not.toContain(escapedKey);
+		expect(message).toContain('"rejectedKey":"[REDACTED]"');
+		expect(mocks.spawn).toHaveBeenCalledTimes(1);
+		const [, args] = mocks.spawn.mock.calls[0] as [string, string[]];
+		expect(args.join(" ")).not.toContain(fakeKey);
+	});
+
+	it("redacts literal and JSON-escaped fake credentials from successful reports and previews", async () => {
+		const fakeKey = 'fake-"quoted"\\coder-key';
+		const escapedKey = JSON.stringify(fakeKey).slice(1, -1);
+		const source = "π😀 " + fakeKey + "\n" + JSON.stringify({ key: fakeKey });
+		vi.stubEnv("PI_CODER_API_KEY", fakeKey);
+		fakeChild(assistant("literal: " + fakeKey + "\nescaped: " + escapedKey));
+		mocks.readFile.mockResolvedValue(source);
+		const result = await registeredTool().execute("1", { task: "write it", target_path: "out.ts" });
+		const display = result.content[0].text;
+		expect(display).not.toContain(fakeKey);
+		expect(display).not.toContain(escapedKey);
+		expect(display).toContain('"key":"[REDACTED]"');
+		expect(display).toContain(String(Buffer.byteLength(source, "utf8")) + " bytes at out.ts");
+		expect(mocks.spawn).toHaveBeenCalledTimes(1);
+		const [, args] = mocks.spawn.mock.calls[0] as [string, string[]];
+		expect(args.join(" ")).not.toContain(fakeKey);
+	});
+
 	it("reports actual UTF-8 file bytes before redacting the fake credential for display", async () => {
 		const fakeKey = "fake-byte-count-key";
 		const source = "π😀 " + fakeKey + "\n";
