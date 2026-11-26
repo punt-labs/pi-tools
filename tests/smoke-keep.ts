@@ -48,7 +48,9 @@ function checkToolEvents(stdout: string, name: string): void {
 						? "Pi assistant " +
 							message.stopReason +
 							(typeof message.errorMessage === "string" ? ": " + message.errorMessage : "")
-						: undefined;
+						: message.stopReason === "stop"
+							? undefined
+							: assistantError;
 			}
 		}
 		if (
