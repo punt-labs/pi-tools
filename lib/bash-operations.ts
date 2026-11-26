@@ -14,12 +14,13 @@ function validateTimeout(seconds: number): void {
 
 /**
  * Supervise each command in its own POSIX process group. The deadline sends
- * SIGTERM, then SIGKILL after ten seconds if the command has not exited.
- * Command exit kills background group members before releasing inherited pipes.
+ * SIGTERM, then SIGKILL after ten seconds if group members are still running.
+ * Normal command exit kills background members; deadline exits retain TERM grace.
  * This does not contain processes that deliberately create another session.
  */
 export function createGuardedBashOperations(
 	timeoutSeconds = DEFAULT_COMMAND_TIMEOUT_S,
+	shellConfig: { shell: string; args: readonly string[] } = { shell: "bash", args: ["-c"] },
 ): BashOperations {
 	validateTimeout(timeoutSeconds);
 	return {
@@ -32,7 +33,7 @@ export function createGuardedBashOperations(
 			const perCallTimeout = timeout !== undefined && timeout < timeoutSeconds;
 			const limit = Math.min(timeout ?? timeoutSeconds, timeoutSeconds);
 			return new Promise((resolve, reject) => {
-				const child = spawn("bash", ["-c", command], {
+				const child = spawn(shellConfig.shell, [...shellConfig.args, command], {
 					cwd,
 					env,
 					detached: true,

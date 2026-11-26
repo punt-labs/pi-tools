@@ -1,21 +1,32 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createBashTool } from "@earendil-works/pi-coding-agent";
-import type { BashSpawnHook, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+	BashSpawnHook,
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import bashGuardExtension from "../extensions/bash-guard.js";
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
-	createBashTool: vi.fn(() => ({ name: "bash" })),
+	createBashToolDefinition: vi.fn(() => ({
+		name: "bash",
+		execute: vi.fn(() => Promise.resolve({ content: [] })),
+	})),
+	getShellConfig: vi.fn(() => ({ shell: "bash", args: ["-c"] })),
 }));
 
 const execFileAsync = promisify(execFile);
 
 function registeredHook(): BashSpawnHook {
 	const registerTool = vi.fn();
-	bashGuardExtension({ registerTool } as unknown as ExtensionAPI);
-	expect(registerTool).toHaveBeenCalledWith(vi.mocked(createBashTool).mock.results[0]?.value);
-	const hook = vi.mocked(createBashTool).mock.calls[0]?.[1]?.spawnHook;
+	bashGuardExtension({ registerTool, getSettings: () => ({}) } as unknown as ExtensionAPI);
+	const registered = registerTool.mock.calls[0]?.[0] as ReturnType<typeof createBashToolDefinition>;
+	void registered.execute("hook", { command: "ignored" }, undefined, undefined, {
+		cwd: process.cwd(),
+	} as ExtensionContext);
+	const hook = vi.mocked(createBashToolDefinition).mock.calls.at(-1)?.[1]?.spawnHook;
 	if (!hook) throw new Error("The registered bash tool has no spawn hook");
 	return hook;
 }
