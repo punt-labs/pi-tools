@@ -220,8 +220,18 @@ export default function piCoderExtension(pi: ExtensionAPI): void {
 					});
 				});
 				if (code !== 0) {
+					const compatibility = /\b(?:unknown|unsupported)\s+(?:cli\s+)?option\b/i.test(
+						stderr + "\n" + stdout,
+					)
+						? "A compatible Pi CLI is required; tested with Pi 1.6.1. " +
+							"Ensure the correct pi executable is on PATH. Required isolation flags will not be disabled.\n"
+						: "";
 					return failCoder(
-						"pi_coder FAILED (exit=" + String(code) + "):\n" + (stderr || stdout).slice(0, 800),
+						"pi_coder FAILED (exit=" +
+							String(code) +
+							"):\n" +
+							compatibility +
+							(stderr || stdout).slice(0, 800),
 					);
 				}
 				// The coder writes the file itself -- it has tools. The extension

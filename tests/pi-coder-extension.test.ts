@@ -278,6 +278,33 @@ describe("pi_coder execution contract", () => {
 		).rejects.toThrow("exit=-1");
 	});
 
+	it.each(["Unknown option: --no-mcp", "Unsupported CLI option: --no-context-files"])(
+		"explains compatible Pi requirements when the CLI rejects isolation options: %s",
+		async (diagnostic) => {
+			vi.stubEnv("PI_CODER_API_KEY", "fake-cli-error-key");
+			fakeChild("", 1, diagnostic + "\nfake-cli-error-key");
+			const message = await failureMessage(
+				registeredTool().execute("1", { task: "write", target_path: "out.ts" }),
+			);
+			expect(message).toContain("compatible Pi CLI is required");
+			expect(message).toContain("tested with Pi 1.6.1");
+			expect(message).toContain("correct pi executable is on PATH");
+			expect(message).toContain(diagnostic);
+			expect(message).not.toContain("fake-cli-error-key");
+			expect(mocks.spawn).toHaveBeenCalledTimes(1);
+			expect(mocks.spawn.mock.calls[0][1]).toContain("--no-mcp");
+		},
+	);
+
+	it("does not mislabel an ordinary provider failure as a CLI compatibility failure", async () => {
+		fakeChild("", 1, "fake provider unavailable");
+		const message = await failureMessage(
+			registeredTool().execute("1", { task: "write", target_path: "out.ts" }),
+		);
+		expect(message).toContain("fake provider unavailable");
+		expect(message).not.toContain("compatible Pi CLI");
+	});
+
 	it("stops collection and terminates the child when output exceeds eight MiB", async () => {
 		const child = fakeChild("x".repeat(9 * 1024 * 1024));
 		await expect(
