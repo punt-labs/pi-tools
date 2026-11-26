@@ -134,8 +134,9 @@ missing fields contribute zero, which does not prove the provider used no
 tokens. The final assistant text is a self-test report, not an acceptance
 record. The file preview is deliberately partial; inspect the complete diff.
 
-Configuration, spawn, cancellation, nonzero-exit, assistant-failure, missing
-final-report, and missing-target failures are tool errors. A readable target
+Configuration, spawn, cancellation, transcript overflow, nonzero-exit,
+assistant-failure, missing-final-report, and missing-target failures are tool
+errors. A readable target
 and successful worker report still do not establish that the child changed
 the intended file or met the task contract.
 
@@ -145,30 +146,41 @@ carrying an `isError` field that the host may ignore.
 
 ## Shell limits and prerequisites
 
-The guard wraps bash commands with GNU coreutils `timeout`. The executable
-must be named `timeout` on `PATH`; installing only `gtimeout` is insufficient.
-On macOS with Homebrew coreutils, expose its `gnubin` directory on `PATH`.
-For example, after confirming the installed prefix in your shell:
+The guard requires Node.js 24 or later, Bash on `PATH`, and POSIX process groups.
+It supervises each Bash command through Pi's command-execution operations in
+TypeScript rather than wrapping the command string with an external utility.
+GNU `timeout`, `gtimeout`, and Homebrew coreutils are not required. Linux
+execution has been checked; macOS execution has not.
 
-```bash
-brew --prefix coreutils
-```
+`PI_BASH_TIMEOUT_S` accepts a positive finite number of seconds up to
+2,147,483.647 seconds, Node's timer ceiling. Missing, zero, negative,
+non-numeric, infinite, and overflowing values fall back to 120 seconds.
+At the deadline the guard sends TERM to the owned command group, followed
+by KILL after 10 seconds if needed. Guard-deadline exit statuses are 124 and
+137. A shorter per-call timeout remains effective; a longer one cannot extend
+the configured ceiling.
 
-Add that prefix's `libexec/gnubin` directory to `PATH`, then confirm the command:
+Each command has its own detached process group. Command exit kills background
+members of that group so ordinary background jobs cannot outlive their command.
+Command cancellation kills the owned group; it does not kill independent
+command groups. Deliberately creating another session can escape the group.
+Process supervision is not containment or a same-user security restriction.
 
-```bash
-timeout --version
-```
+Three different runtime controls must not be confused:
 
-`PI_BASH_TIMEOUT_S` accepts a positive finite number of seconds. Missing,
-zero, negative, non-numeric, and infinite values fall back to 120 seconds.
-At the limit, `timeout` sends TERM; if needed it sends KILL after another
-10 seconds. Timeout-related exit statuses include 124 and 137.
+- The shell deadline applies per bash command, not to the complete worker
+  lifetime. The shell guard's TERM-to-KILL grace period is 10 seconds.
+- `pi_coder` retains at most 8 MiB of combined nested-Pi stdout and stderr.
+  Crossing that transcript-capture limit fails the delegation and terminates
+  its process group. Cancellation and transcript overflow send TERM, then KILL
+  after one second if needed; this is distinct from the shell guard's grace.
+- Shell-command output files and disk spill have no volume cap. The transcript
+  limit is not a disk quota. A fast command can write substantial data during
+  its allowed runtime, and a worker can issue several commands.
 
-This limit applies per bash command, not to the worker's complete lifetime.
-There is no hard output cap. A command can emit substantial output before its
-deadline, and the worker can issue several commands. Set task-specific checks
-and monitor resource use for commands that may loop or produce large output.
+There is no total worker deadline. Set task-specific checks and monitor resource
+use for commands that may loop or produce large output. The result's file size
+describes actual UTF-8 bytes, not the length of its redacted text preview.
 
 ## Access and trust
 

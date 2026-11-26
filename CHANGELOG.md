@@ -13,8 +13,15 @@ Changes are grouped under Unreleased until the first tagged release.
   selects a Pi thinking level.
 - Coder reporting includes the final worker report, file preview, and available
   JSON-event token usage, with failures reported separately from success.
+- Retained nested-Pi stdout and stderr have an 8 MiB combined transcript cap.
+  Overflow fails the delegation. Cancellation and overflow terminate the coder
+  process group with TERM and a one-second KILL escalation, separately from
+  shell-command deadlines.
 - A bash guard applies a 120-second default per-command timeout, configurable
   through `PI_BASH_TIMEOUT_S`, with KILL after a 10-second TERM grace period.
+- Node-based POSIX process-group supervision kills ordinary background jobs
+  when their command exits, honors shorter per-call timeouts, and cancels only
+  the owned group. It requires no GNU `timeout` executable.
 - The bash guard removes optional `PI_CODER_API_KEY` from shell subprocess
   environments while Pi processes retain it for configured provider auth.
 - Delegated-coding guidance and ADR-012 define the parent's architecture
@@ -26,8 +33,9 @@ Changes are grouped under Unreleased until the first tagged release.
 
 ### Changed
 
-- Markdown lint uses repository npm tooling and excludes gitignored runtime
-  captures and scratch files while retaining repository-owned Markdown checks.
+- Markdown lint uses repository npm tooling and explicit tracked paths from
+  the current Git worktree's index, excluding runtime captures and scratch
+  files without skipping a worktree inside an ignored parent directory.
 
 ### Fixed
 
@@ -45,6 +53,11 @@ Changes are grouped under Unreleased until the first tagged release.
   Source-file scope is an instruction, not a filesystem restriction.
 - Shell timeouts are not a total worker deadline, an output cap, or a sandbox.
   Credential removal does not filter every tool, environment secret, or file.
-- GNU `timeout` must be available by that name, including on macOS.
+- The coder transcript cap does not cap shell-command output files or disk
+  spill. File-size reports describe actual UTF-8 bytes rather than redacted
+  preview character counts.
+- The guard requires Node.js 24, Bash, and POSIX process groups. Linux execution
+  is checked; macOS execution is not yet checked. Deliberate new sessions can
+  escape command-group supervision.
 - A worker's report remains pending parent verification; it is not proof that
   the requested behavior or integration checks passed.

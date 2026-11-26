@@ -595,11 +595,20 @@ actual diff, reject unauthorized file changes, and independently execute the
 specified tests and integration checks before accepting. Neither a successful
 worker report nor a zero process exit substitutes for these checks.
 
-Load the shell guard for nested coder bash calls. It applies GNU `timeout`
-with a 120-second default and a 10-second TERM-to-KILL grace period.
-`PI_BASH_TIMEOUT_S` overrides the default with a positive finite value.
+Load the shell guard for nested coder Bash calls. TypeScript command operations
+supervise each command in a detached POSIX process group through Node.js.
+The default deadline is 120 seconds, with a 10-second TERM-to-KILL grace period.
+`PI_BASH_TIMEOUT_S` overrides the default with a positive finite value within
+Node's timer ceiling. Shorter per-call timeouts still apply. Command exit kills
+background members of the owned group, and cancellation kills only that group.
 Remove `PI_CODER_API_KEY` from bash subprocess environments while retaining it
 in Pi processes for provider authentication.
+
+Bound retained nested-Pi stdout and stderr to 8 MiB combined. Transcript
+overflow fails the delegation. Cancellation and transcript overflow terminate
+the coder process group with TERM and a one-second KILL escalation, distinct
+from the shell guard's 10-second grace period. Report file sizes as actual
+UTF-8 bytes, independently of credential redaction in the preview.
 
 ### ADR-012 Consequences
 
@@ -613,7 +622,12 @@ in Pi processes for provider authentication.
   credential files, or other environment variables. It is not a sandbox.
 - Command timeouts do not bound total worker runtime, total output, disk
   usage, or model cost. Fast output can still exhaust storage.
-- GNU `timeout` must be available by that name, including on macOS.
+- The 8 MiB transcript cap bounds retained child-process output, not shell
+  output files, disk spill, or total worker runtime. It is not a disk quota.
+- Node.js 24, Bash, and POSIX process groups are required; GNU `timeout` is not.
+  Linux execution is checked; macOS execution is not yet checked.
+- Processes that deliberately create another session can escape command-group
+  supervision. This mechanism does not restrict same-user access or credentials.
 - Offline tests exercise helper contracts and extension behavior; a live Pi
   check is separately required to establish real provider/tool execution.
 

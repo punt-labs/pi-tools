@@ -15,15 +15,17 @@ Its shell guard gives Pi bash commands a default time limit.
 ## Requirements
 
 - macOS or Linux
+- Node.js 24 or later and Bash on `PATH`
 - [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
 - [tmux](https://github.com/tmux/tmux/wiki)
 - [Biff](https://github.com/punt-labs/biff) only when using the Biff bridge
-- GNU coreutils `timeout` on `PATH` when using the shell guard or coder
+- POSIX process groups when using the shell guard or coder
 - A configured Pi provider and model when using `pi_coder`
 
-On macOS, coreutils commonly installs `gtimeout`; expose its GNU `timeout`
-command on `PATH`. The guard invokes `timeout`, not `gtimeout`. See
-[`docs/CODING.md`](docs/CODING.md) for provider and shell-guard setup.
+The guard supervises command groups through Node.js; no GNU `timeout` or
+coreutils installation is required. Linux execution has been checked; macOS
+execution has not. See [`docs/CODING.md`](docs/CODING.md) for provider setup
+and process-supervision limits.
 
 Pi extensions execute with the same system access as Pi itself. Review an
 extension before installing it, especially when Pi can run commands without
@@ -100,13 +102,21 @@ contract and configuration example.
 
 ### `bash-guard`
 
-Replace Pi's bash tool with a wrapper that applies GNU `timeout` to each command.
-`PI_BASH_TIMEOUT_S` accepts a positive finite number of seconds; missing or
-invalid values use 120 seconds. The wrapper sends TERM at the limit, followed
-by KILL after a further 10 seconds if needed.
+Replace Pi's bash tool with one that supervises each command in its own detached
+POSIX process group. `PI_BASH_TIMEOUT_S` accepts a positive finite number of
+seconds within Node's timer ceiling; missing or invalid values use 120 seconds.
+The deadline sends TERM, followed by KILL after 10 seconds if needed. A shorter
+per-call timeout still applies; a longer one cannot extend the guard's ceiling.
+Command exit kills background members of the owned group, and cancellation
+kills that group without affecting independent command groups.
 
 This is a per-command limit, not a total worker-runtime limit or hard output
-cap. Fast commands can still produce substantial output before timeout.
+volume cap on command output files. Fast commands can still produce substantial
+disk output before timeout. Separately, `pi_coder` caps retained nested-Pi
+stdout and stderr at 8 MiB combined. Transcript overflow fails the delegation;
+cancellation and overflow terminate its process group with TERM, followed by
+KILL after one second if needed. That is not the shell guard's 10-second grace
+period and does not impose a hard disk-usage cap.
 The guard removes `PI_CODER_API_KEY` from bash subprocess environments; parent
 and nested Pi processes retain it for provider authentication. It does not
 remove every credential or restrict access to credential files, other tools,
@@ -240,8 +250,8 @@ make check
 
 `make check` runs TypeScript type checking, ESLint, Prettier verification,
 offline helper and extension tests, and Markdown linting. Local process tests
-require bash and GNU `timeout`; offline means no live provider or relay is
-needed, not that every test is a pure function.
+require Node.js 24, Bash, and POSIX process groups; offline means no live
+provider or relay is needed, not that every test is a pure function.
 
 Real-relay tests own both Biff endpoints but require tmux, an authenticated Biff
 installation, and network access:
@@ -260,7 +270,8 @@ in [`docs/CODING.md`](docs/CODING.md). Release-facing changes are recorded in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 The coder's deterministic loopback smoke uses real installed parent and nested
-Pi processes with fake provider responses and credentials. It exercises tool
+Pi processes with fake provider responses and credentials. Run it with
+`make smoke-coder`. It exercises tool
 invocation and file/shell checks, not real-model coding quality. See the testing
 guide for its platform requirements and the separate live acceptance workflow.
 
