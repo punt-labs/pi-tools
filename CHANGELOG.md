@@ -21,6 +21,11 @@ Changes are grouped under Unreleased until the first tagged release.
   ownership and mandatory independent diff, file-scope, test, and integration
   verification before acceptance.
 
+### Changed
+
+- Markdown lint uses repository npm tooling and excludes gitignored runtime
+  captures and scratch files while retaining repository-owned Markdown checks.
+
 ### Security and operational limits
 
 - Child agents share the current user's filesystem, network, and tools.

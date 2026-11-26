@@ -55,6 +55,8 @@ Helper tests live in `tests/` and cover logic in `lib/`:
   implementation instructions
 - `bash-guard.test.ts` — timeout wrapping, quoting, validation, exit statuses,
   real command completion, and runaway-command termination
+- `markdownlint.test.ts` — repository Markdown remains linted while gitignored
+  runtime captures, scratch files, and the deposited tracker guide are excluded
 
 The pure helper cases verify input/output behavior without external services.
 Some cases use controlled mocks or local subprocesses. In particular, the bash
@@ -74,6 +76,12 @@ These run under `make test` and `make check`. Controlled processes and fake
 hosts do not prove that a real Pi provider accepts the configuration or that
 a live model follows the file contract. Live validation is a separate tier.
 
+The installed Pi CLI and repository SDK can have different versions. Type
+checking and mocked hosts do not establish the real CLI's runtime behavior.
+In particular, verify failures in actual Pi JSON tool-result events: a resolved
+object with `isError` is not sufficient for hosts that only mark thrown errors
+as tool failures. Error messages must not expose the configured credential.
+
 The parent's acceptance protocol must remain explicit in the registered tool
 guidance: inspect the actual diff, enforce allowed files, and independently
 run specified tests and integration checks. Never change that guidance to
@@ -86,8 +94,11 @@ without errors.
 
 ## Markdown lint
 
-All checked-in markdown must pass markdownlint, excluding
-`node_modules` and `.direnv`.
+Repository-owned Markdown must pass markdownlint. Dependency directories,
+gitignored runtime captures and scratch files, and the deposited tracker guide
+under `.punt-labs/punt/` are not repository-authored documentation. Audit the
+tracked inventory with `git ls-files '*.md'`; do not treat captured runtime
+documents or dependency documentation as this repository's writing.
 
 ## Biff real-relay integration
 

@@ -52,6 +52,10 @@ Optionally set `PI_CODER_THINKING` to a Pi thinking level: `off`, `minimal`,
 depend on the selected model and Pi version. Omitting it leaves thinking
 selection to Pi rather than imposing a pi-tools default.
 
+Missing or blank provider/model values produce a configuration error before
+starting the child. Unsupported nonblank thinking levels also fail before
+spawn. Configure these variables in the environment that starts the parent Pi.
+
 ## Load the extensions
 
 The source-installed package loads all its extensions by default. Use
@@ -94,6 +98,12 @@ That does not prevent the child from inspecting files through its tools.
 Do not rely on hidden conversation context or assume the child remembers a
 previous attempt.
 
+The nested Pi uses JSON print mode and keeps its built-in tools enabled.
+Automatic discovery of extensions, context files, skills, prompt templates,
+and MCP servers is disabled; the shell guard is loaded explicitly. Pi's
+`--offline` flag disables startup network operations such as update checks,
+not provider requests or the child's ability to access the network.
+
 ## Independent acceptance is mandatory
 
 Every worker report is **pending parent verification**, including reports that
@@ -117,6 +127,17 @@ test, or verify an existing file: it is a writing tool and can rewrite it.
 The result can include the worker's final report, a file preview, and reported
 token usage. Usage depends on the provider's JSON events and is not a measure
 of correctness or a guarantee of lower cost.
+
+Tool results expose `details.coderUsage.inputTokens`, `outputTokens`, and
+`reasoningTokens`. These aggregate recognized assistant-message usage fields;
+missing fields contribute zero, which does not prove the provider used no
+tokens. The final assistant text is a self-test report, not an acceptance
+record. The file preview is deliberately partial; inspect the complete diff.
+
+Configuration, spawn, cancellation, nonzero-exit, assistant-failure, missing
+final-report, and missing-target failures are tool errors. A readable target
+and successful worker report still do not establish that the child changed
+the intended file or met the task contract.
 
 ## Shell limits and prerequisites
 

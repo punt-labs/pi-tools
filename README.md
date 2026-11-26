@@ -239,7 +239,9 @@ make check
 ```
 
 `make check` runs TypeScript type checking, ESLint, Prettier verification,
-offline unit tests, and Markdown linting.
+offline helper and extension tests, and Markdown linting. Local process tests
+require bash and GNU `timeout`; offline means no live provider or relay is
+needed, not that every test is a pure function.
 
 Real-relay tests own both Biff endpoints but require tmux, an authenticated Biff
 installation, and network access:
