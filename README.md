@@ -2,9 +2,10 @@
 
 Small, reusable extensions for the
 [Pi coding agent](https://github.com/earendil-works/pi/tree/main/packages/coding-agent).
-The package currently provides tools for managing long-running terminal
-processes and connecting Pi sessions to
-[Biff](https://github.com/punt-labs/biff).
+The package provides tools for managing long-running terminal processes,
+connecting Pi sessions to [Biff](https://github.com/punt-labs/biff), and
+delegating file implementation to a separately configured Pi coding agent.
+Its shell guard gives Pi bash commands a default time limit.
 
 > [!IMPORTANT]
 > This project is in early development. It is installed from source, and its
@@ -17,6 +18,12 @@ processes and connecting Pi sessions to
 - [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
 - [tmux](https://github.com/tmux/tmux/wiki)
 - [Biff](https://github.com/punt-labs/biff) only when using the Biff bridge
+- GNU coreutils `timeout` on `PATH` when using the shell guard or coder
+- A configured Pi provider and model when using `pi_coder`
+
+On macOS, coreutils commonly installs `gtimeout`; expose its GNU `timeout`
+command on `PATH`. The guard invokes `timeout`, not `gtimeout`. See
+[`docs/CODING.md`](docs/CODING.md) for provider and shell-guard setup.
 
 Pi extensions execute with the same system access as Pi itself. Review an
 extension before installing it, especially when Pi can run commands without
@@ -43,9 +50,20 @@ pi install git:github.com/punt-labs/pi-tools@<commit-sha>
 ```
 
 The package loads all extensions by default. Use `pi config` to disable an
-extension you do not need. If the Biff bridge is enabled without an installed
-and authenticated `biff` command, Pi displays a startup warning; the `keep`
-extension remains usable.
+extension you do not need, including `pi-coder` and `bash-guard`. Loading the
+guard changes the parent session's bash tool too, not only nested coder calls.
+If the Biff bridge is enabled without an installed and authenticated `biff`
+command, Pi displays a startup warning; the `keep` extension remains usable.
+
+For a local source checkout, load only the coder and its shell guard:
+
+```bash
+pi --no-extensions -e ./extensions/pi-coder.ts -e ./extensions/bash-guard.ts
+```
+
+`--no-extensions` disables discovery; explicit `-e` paths still load. A package
+path loads its selected package resources, while a file path loads that
+extension. Configure the provider before making a coder call.
 
 Update or remove the package with Pi's package manager:
 
@@ -55,6 +73,44 @@ pi remove git:github.com/punt-labs/pi-tools
 ```
 
 ## Extensions
+
+### `pi-coder`
+
+`pi_coder(task, target_path)` delegates one focused file to a fresh Pi agent.
+The parent owns architecture, file boundaries, interfaces, allowed writes, and
+acceptance checks. The child writes the file on the shared filesystem, then
+compiles, runs, and tests its implementation with tools.
+
+Set both `PI_CODER_PROVIDER` and `PI_CODER_MODEL`; neither has a default.
+`PI_CODER_THINKING` optionally selects a Pi thinking level. Provider endpoint
+and authentication setup belong in Pi configuration, not the task prompt.
+`PI_CODER_API_KEY` is an optional credential for a provider configured to use
+it; it is not a provider selector or an automatic authentication mapping.
+
+Each call has no previous conversation or previous-call history. It can still
+inspect accessible files and use the same user's network and tools. A requested
+source-file scope is an instruction, not a filesystem restriction.
+
+The returned worker report is **pending parent verification**. Before accepting,
+the parent must inspect the actual diff, enforce allowed files, and independently
+run the specified tests and integration checks. A file preview, worker report,
+or token-usage summary is not proof. Never call this writing tool merely to
+verify an existing file. See [`docs/CODING.md`](docs/CODING.md) for the full
+contract and configuration example.
+
+### `bash-guard`
+
+Replace Pi's bash tool with a wrapper that applies GNU `timeout` to each command.
+`PI_BASH_TIMEOUT_S` accepts a positive finite number of seconds; missing or
+invalid values use 120 seconds. The wrapper sends TERM at the limit, followed
+by KILL after a further 10 seconds if needed.
+
+This is a per-command limit, not a total worker-runtime limit or hard output
+cap. Fast commands can still produce substantial output before timeout.
+The guard removes `PI_CODER_API_KEY` from bash subprocess environments; parent
+and nested Pi processes retain it for provider authentication. It does not
+remove every credential or restrict access to credential files, other tools,
+the filesystem, or the network.
 
 ### `keep`
 
@@ -196,6 +252,10 @@ The relay suite is intentionally excluded from `make check` so the default gate
 remains deterministic and offline. See [`docs/TESTING.md`](docs/TESTING.md) for
 the full test strategy and [`DESIGN.md`](DESIGN.md) for accepted architectural
 decisions.
+
+Coder-specific configuration and independent acceptance checks are documented
+in [`docs/CODING.md`](docs/CODING.md). Release-facing changes are recorded in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## Repository scope
 

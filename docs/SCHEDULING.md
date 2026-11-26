@@ -24,6 +24,19 @@ All timers and pending events are cancelled on session shutdown, including
 reload, new-session, resume, fork, and process exit. Kept tmux processes may
 remain alive, but they cannot wake a replacement Pi session.
 
+## Coder calls and shell deadlines
+
+`pi_coder` is a file-writing delegation tool, not a repeating schedule or a
+background wake source. Its child implements and tests a file, and the parent
+must independently inspect and verify the result before acceptance. See
+[`CODING.md`](CODING.md) for this contract.
+
+`PI_BASH_TIMEOUT_S` controls individual guarded bash commands. It does not
+control scheduler intervals, total coder runtime, or the lifetime of a kept
+tmux process. In particular, a guard around the bash call that starts tmux
+does not impose that deadline on the durable process inside tmux. Use
+`keep_stop` and explicit process lifecycle management for kept work.
+
 ## Watching commands
 
 `keep_watch` runs a command under tmux `watch` and samples its visible pane at
