@@ -148,44 +148,55 @@ function previewBody(body: string): string {
 }
 
 export default function piCoderExtension(pi: ExtensionAPI): void {
+	let configured = true;
+	try {
+		resolveCoderConfig(process.env);
+	} catch {
+		configured = false;
+	}
 	pi.registerTool({
 		name: "pi_coder",
 		label: "Pi Coder",
-		description:
-			"Delegate a code-writing task to the configured Pi provider and model. " +
-			"Use for ALL source-file writes: the planner should never emit code inline. " +
-			"The coder can read and write the actual filesystem, compile, run, and test. " +
-			"It receives the task and target path, not your conversation history. " +
-			"Specify the work precisely and keep each request small; delegate fixes " +
-			"with the observed failure and required behavior. A successful result includes the " +
-			"coder's self-test report, awaiting boss verification, not acceptance. " +
-			"The boss independently reviews the diff and runs required tests and integration checks.",
-		promptSnippet:
-			"Delegate source-file writes to pi_coder, the configured coding agent. It has tools " +
-			"to write, compile, and test. Break work into small, fully-specified " +
-			"files and send failures back as explicit correction requests.",
-		promptGuidelines: [
-			"Always call pi_coder to create or fully rewrite a source file.",
-			"Never use bash to write source-file contents inline (no heredoc, tee, echo>, printf>).",
-			"Specify the contract, not the implementation. You own the architecture: the file " +
-				"boundaries, the decomposition, the signatures, and the behaviour each piece must " +
-				"exhibit. The coder owns the implementation — it writes the algorithm. If you find " +
-				"yourself dictating code line by line, you are doing its job and wasting it.",
-			"The coder can inspect the actual filesystem and run commands. It has no conversation " +
-				"history; supply requirements and earlier failures in the task text.",
-			"Prefer several small, tightly-scoped calls over one call for a large file. Split by " +
-				"concern and give each call an exact, self-contained specification.",
-			"Be exact about the interface and silent about the internals: give function signatures, " +
-				"the precise I/O contract (stdin/stdout format, exit codes), edge cases, and compile " +
-				'flags. Name the algorithm where it matters ("use minimax"), but do not write it out.',
-			"The coder self-tests its own file to shorten iteration, not to provide independent verification. On failure, " +
-				"send a new call naming the specific defect and the exact required behaviour rather " +
-				"than repeating the original request.",
-			"Never call pi_coder only to inspect, build, test, or verify an existing file: it is a " +
-				"file-writing tool and may rewrite target_path. The boss must independently review the diff " +
-				"and run required tests and integration checks before acceptance.",
-			"target_path is relative to the current working directory unless absolute.",
-		],
+		description: configured
+			? "Delegate a code-writing task to the configured Pi provider and model. " +
+				"Use for ALL source-file writes: the planner should never emit code inline. " +
+				"The coder can read and write the actual filesystem, compile, run, and test. " +
+				"It receives the task and target path, not your conversation history. " +
+				"Specify the work precisely and keep each request small; delegate fixes " +
+				"with the observed failure and required behavior. A successful result includes the " +
+				"coder's self-test report, awaiting boss verification, not acceptance. " +
+				"The boss independently reviews the diff and runs required tests and integration checks."
+			: "Configure PI_CODER_PROVIDER and PI_CODER_MODEL, with an optional valid PI_CODER_THINKING, to use pi_coder. " +
+				"Other editing tools remain available; delegation is not required.",
+		promptSnippet: configured
+			? "Delegate source-file writes to pi_coder, the configured coding agent. It has tools " +
+				"to write, compile, and test. Break work into small, fully-specified " +
+				"files and send failures back as explicit correction requests."
+			: "Optional coding delegation is not configured.",
+		promptGuidelines: configured
+			? [
+					"Always call pi_coder to create or fully rewrite a source file.",
+					"Never use bash to write source-file contents inline (no heredoc, tee, echo>, printf>).",
+					"Specify the contract, not the implementation. You own the architecture: the file " +
+						"boundaries, the decomposition, the signatures, and the behaviour each piece must " +
+						"exhibit. The coder owns the implementation — it writes the algorithm. If you find " +
+						"yourself dictating code line by line, you are doing its job and wasting it.",
+					"The coder can inspect the actual filesystem and run commands. It has no conversation " +
+						"history; supply requirements and earlier failures in the task text.",
+					"Prefer several small, tightly-scoped calls over one call for a large file. Split by " +
+						"concern and give each call an exact, self-contained specification.",
+					"Be exact about the interface and silent about the internals: give function signatures, " +
+						"the precise I/O contract (stdin/stdout format, exit codes), edge cases, and compile " +
+						'flags. Name the algorithm where it matters ("use minimax"), but do not write it out.',
+					"The coder self-tests its own file to shorten iteration, not to provide independent verification. On failure, " +
+						"send a new call naming the specific defect and the exact required behaviour rather " +
+						"than repeating the original request.",
+					"Never call pi_coder only to inspect, build, test, or verify an existing file: it is a " +
+						"file-writing tool and may rewrite target_path. The boss must independently review the diff " +
+						"and run required tests and integration checks before acceptance.",
+					"target_path is relative to the current working directory unless absolute.",
+				]
+			: [],
 		parameters: {
 			type: "object",
 			properties: {

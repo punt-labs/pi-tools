@@ -26,6 +26,7 @@ async function failureMessage(pending: Promise<Result>): Promise<string> {
 interface Tool {
 	name: string;
 	description: string;
+	promptSnippet: string;
 	promptGuidelines: string[];
 	execute(
 		id: string,
@@ -83,6 +84,42 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("pi_coder execution contract", () => {
+	it.each([
+		{ provider: "", model: "", thinking: "" },
+		{ provider: "test-provider", model: "", thinking: "" },
+		{ provider: "", model: "test-model", thinking: "" },
+		{ provider: "test-provider", model: "   ", thinking: "" },
+		{ provider: "test-provider", model: "test-model", thinking: "invalid" },
+	])(
+		"does not require delegation at startup with invalid coder configuration: %j",
+		async ({ provider, model, thinking }) => {
+			vi.stubEnv("PI_CODER_PROVIDER", provider);
+			vi.stubEnv("PI_CODER_MODEL", model);
+			vi.stubEnv("PI_CODER_THINKING", thinking);
+			const tool = registeredTool();
+			const instructions = [tool.description, tool.promptSnippet, ...tool.promptGuidelines].join(
+				" ",
+			);
+			expect(instructions).not.toMatch(
+				/ALL source-file writes|Always call|Never use bash|Delegate source-file writes/i,
+			);
+			expect(instructions).not.toContain("boss");
+			expect(instructions).toContain("PI_CODER_PROVIDER");
+			expect(instructions).toContain("PI_CODER_MODEL");
+			await expect(tool.execute("1", { task: "write", target_path: "out.ts" })).rejects.toThrow(
+				"PI_CODER_",
+			);
+			expect(mocks.spawn).not.toHaveBeenCalled();
+		},
+	);
+
+	it("requires delegation and independent boss verification only with valid startup configuration", () => {
+		const tool = registeredTool();
+		expect(tool.description).toContain("ALL source-file writes");
+		expect(tool.promptSnippet).toContain("Delegate source-file writes");
+		expect(tool.promptGuidelines.join(" ")).toContain("Always call pi_coder");
+		expect(tool.promptGuidelines.join(" ")).toContain("independently");
+	});
 	it("emits a real Pi SDK tool_execution_end failure for missing coder configuration", async () => {
 		vi.stubEnv("PI_CODER_PROVIDER", "");
 		const sdkRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
