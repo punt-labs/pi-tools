@@ -2,7 +2,8 @@
 
 This document records architectural decisions for `pi-tools`. Implementation
 and operational guidance live in [`README.md`](README.md),
-[`docs/SCHEDULING.md`](docs/SCHEDULING.md), and
+[`docs/SCHEDULING.md`](docs/SCHEDULING.md),
+[`docs/CODING.md`](docs/CODING.md), and
 [`docs/TESTING.md`](docs/TESTING.md).
 
 ## ADR-001: Keep pi-tools a source-installed Pi package
@@ -25,7 +26,8 @@ disable resources through `pi config`.
 
 ### ADR-001 Consequences
 
-- One installation can provide `keep`, `/every`, and the Biff bridge.
+- One installation can provide `keep`, `/every`, the Biff bridge, the coder,
+  and the shell guard.
 - Source installations can pin a Git commit for reproducibility.
 - APIs remain explicitly pre-release until the first tagged version.
 - Utilities with substantial engines or independent release requirements must
@@ -552,3 +554,80 @@ Keep offline unit and static checks in `make check`; run relay validation with
 - **One end-to-end test:** rejected because failures have low diagnostic value.
 - **Run relay tests in the default gate:** rejected because `make check` must
   remain offline and deterministic.
+
+## ADR-012: Delegate implementation without delegating acceptance
+
+- **Status:** Accepted
+- **Date:** 2026-11-26
+
+### ADR-012 Context
+
+A parent Pi agent needs to delegate source-file implementation to a separately
+selected coding model. The child needs tools to compile, run, test, and correct
+its own work. Returning source as chat output is not equivalent to writing and
+testing the requested file. A worker's report cannot establish acceptance.
+
+Unbounded shell commands can also produce runaway output. One earlier command
+produced 204 GB of output after an EOF-handling loop failed to terminate.
+Command runtime needs an enforced default, independently of model discretion.
+
+### ADR-012 Decision
+
+Expose `pi_coder(task, target_path)`. The parent owns architecture, file
+decomposition, interfaces, allowed files, and the exact acceptance commands.
+The child receives a self-contained task, writes the requested file on the
+shared filesystem, and uses its tools to compile, run, test, and repair it.
+Resolve relative target paths against the calling working directory.
+
+Start a fresh, non-persistent Pi conversation for each call. Do not forward the
+parent conversation or earlier worker calls. Include relevant contracts and
+observed failures explicitly in each task. Files remain shared and readable;
+stateless conversation does not imply an empty or restricted filesystem.
+
+Require `PI_CODER_PROVIDER` and `PI_CODER_MODEL` rather than choosing a gateway,
+vendor, endpoint, or model by default. Accept `PI_CODER_THINKING` optionally.
+Use Pi's external provider configuration for endpoints and authentication.
+Keep credential values out of task prompts and command arguments.
+
+Return the worker's final report, file preview, and available usage metadata
+as information **pending parent verification**. The parent must inspect the
+actual diff, reject unauthorized file changes, and independently execute the
+specified tests and integration checks before accepting. Neither a successful
+worker report nor a zero process exit substitutes for these checks.
+
+Load the shell guard for nested coder bash calls. It applies GNU `timeout`
+with a 120-second default and a 10-second TERM-to-KILL grace period.
+`PI_BASH_TIMEOUT_S` overrides the default with a positive finite value.
+Remove `PI_CODER_API_KEY` from bash subprocess environments while retaining it
+in Pi processes for provider authentication.
+
+### ADR-012 Consequences
+
+- Provider choice belongs to the user; a local or remote provider can be used.
+- The child closes its own implementation-and-test loop without taking over
+  architecture or the parent's acceptance decision.
+- Revisions require a new, self-contained task with observed failures.
+- Parent and child run as the same user with filesystem, network, and tool
+  access. File scope is a prompt instruction, not an enforced restriction.
+- Credential removal applies to bash subprocess environments, not all tools,
+  credential files, or other environment variables. It is not a sandbox.
+- Command timeouts do not bound total worker runtime, total output, disk
+  usage, or model cost. Fast output can still exhaust storage.
+- GNU `timeout` must be available by that name, including on macOS.
+- Offline tests exercise helper contracts and extension behavior; a live Pi
+  check is separately required to establish real provider/tool execution.
+
+### ADR-012 Alternatives considered
+
+- **Hard-code a gateway or coding model:** rejected because provider selection
+  and authentication must remain user-configured.
+- **Have the parent write returned stdout into the source file:** rejected
+  because the child writes the file itself and stdout can contain narration.
+- **Disable child tools:** rejected because it prevents the child from testing
+  and correcting its own implementation.
+- **Accept a worker's successful report as proof:** rejected because only
+  independent inspection and execution can establish the parent's criteria.
+- **Treat a one-file prompt as a sandbox:** rejected because no filesystem or
+  privilege boundary is created.
+- **Use a command timeout as an output cap:** rejected because output rate is
+  not bounded by elapsed runtime.
