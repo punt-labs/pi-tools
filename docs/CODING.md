@@ -55,6 +55,10 @@ selection to Pi rather than imposing a pi-tools default.
 Missing or blank provider/model values produce a configuration error before
 starting the child. Unsupported nonblank thinking levels also fail before
 spawn. Configure these variables in the environment that starts the parent Pi.
+Valid configuration when the extension loads enables its mandatory delegation
+guidance. Otherwise it does not require delegation, and other editing tools
+remain available. Calling an unconfigured coder still reports the configuration
+error without spawning a child.
 
 ## Load the extensions
 
@@ -86,8 +90,10 @@ The parent owns architecture and the file contract. Each task must include:
 
 Specify required behavior without dictating the implementation line by line.
 Prefer small, focused files. `target_path` is absolute or relative to the
-calling working directory. Include the target and relevant paths in the task
-contract so the child knows what to inspect and write.
+active Pi workspace directory supplied with the tool call. The nested Pi starts
+in that directory, even when it differs from the host process's startup
+directory. Include the target and relevant paths in the task contract so the
+child knows what to inspect and write.
 
 The child has tools. It writes the requested file on the shared filesystem,
 compiles, runs, tests, and corrects its implementation. The extension reports
@@ -133,6 +139,11 @@ Tool results expose `details.coderUsage.inputTokens`, `outputTokens`, and
 missing fields contribute zero, which does not prove the provider used no
 tokens. The final assistant text is a self-test report, not an acceptance
 record. The file preview is deliberately partial; inspect the complete diff.
+
+The final assistant report must finish with `stopReason: "stop"`. A completed
+retry can recover from an earlier provider error; terminal `error`, `aborted`,
+or `length` outcomes and incomplete tool-call outcomes remain failures even
+when the child process exits zero.
 
 Configuration, spawn, cancellation, transcript overflow, nonzero-exit,
 assistant-failure, missing-final-report, and missing-target failures are tool

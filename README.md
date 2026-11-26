@@ -101,6 +101,12 @@ and authentication setup belong in Pi configuration, not the task prompt.
 `PI_CODER_API_KEY` is an optional credential for a provider configured to use
 it; it is not a provider selector or an automatic authentication mapping.
 
+Valid configuration at extension load enables guidance requiring source-file
+delegation. Without it, other editing tools remain usable; calling `pi_coder`
+returns a configuration error before starting a child. Relative target paths
+and the child's working directory use Pi's active workspace, not the host
+process's startup directory.
+
 Each call has no previous conversation or previous-call history. It can still
 inspect accessible files and use the same user's network and tools. A requested
 source-file scope is an instruction, not a filesystem restriction.

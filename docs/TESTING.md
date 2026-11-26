@@ -107,13 +107,14 @@ without errors.
 ## Markdown lint
 
 `lib/lint-docs.ts` selects explicit tracked Markdown paths from the current Git
-worktree's index, then passes them to markdownlint. This works even when the
+worktree's index, then passes them to markdownlint as literal filenames, not
+glob patterns. This works even when the
 worktree is inside an ignored parent directory. Stage new Markdown files before
 running this gate so they are included.
 
 Dependency documentation, untracked runtime captures and scratch files, and
 the deposited tracker guide under `.punt-labs/punt/` are not repository-authored
-documentation. The deposited guide remains excluded by the lint configuration.
+documentation. The selector explicitly excludes the deposited guide.
 Audit the tracked inventory with `git ls-files '*.md'`; do not treat captured
 session logs as this repository's writing.
 

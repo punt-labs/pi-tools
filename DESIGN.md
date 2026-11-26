@@ -579,6 +579,11 @@ The child receives a self-contained task, writes the requested file on the
 shared filesystem, and uses its tools to compile, run, test, and repair it.
 Resolve relative target paths against the calling working directory.
 
+Use Pi's active tool-context workspace for both relative target resolution and
+the nested process's working directory. Require delegation through tool
+guidance only when configuration is valid as the extension loads; otherwise
+ordinary editing tools remain available.
+
 Start a fresh, non-persistent Pi conversation for each call. Do not forward the
 parent conversation or earlier worker calls. Include relevant contracts and
 observed failures explicitly in each task. Files remain shared and readable;
