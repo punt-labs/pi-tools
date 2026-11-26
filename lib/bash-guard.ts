@@ -29,28 +29,7 @@ export const DEFAULT_COMMAND_TIMEOUT_S = 120;
 /** Grace period before SIGKILL after SIGTERM is ignored. */
 export const KILL_GRACE_S = 10;
 
-/**
- * Wrap a command so it cannot outlive `timeoutSeconds`.
- *
- * Uses coreutils `timeout`: SIGTERM at the limit, SIGKILL `KILL_GRACE_S` later
- * for a process that ignores it. Exit status 124 means the command was killed
- * for running too long, which the agent sees and can act on.
- *
- * `exec` matters — without it the shell stays alive as a parent and `timeout`
- * signals the shell rather than the program actually looping.
- */
-export function withTimeout(command: string, timeoutSeconds = DEFAULT_COMMAND_TIMEOUT_S): string {
-	if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
-		throw new Error(`Invalid timeout: ${String(timeoutSeconds)}`);
-	}
-	// Applied to the whole command string via a nested shell, so pipelines,
-	// redirections, and `&&` chains are all covered rather than just the first
-	// word. Single quotes in the command are escaped for the wrapping shell.
-	const escaped = command.replace(/'/g, `'\\''`);
-	return `timeout --kill-after=${String(KILL_GRACE_S)}s ${String(timeoutSeconds)}s bash -c '${escaped}'`;
-}
-
-/** True when an exit code indicates `timeout` killed the command. */
+/** True when the guard stopped a command because its deadline expired. */
 export function isTimeoutExit(code: number): boolean {
 	return code === 124 || code === 137;
 }

@@ -62,11 +62,11 @@ describe("bash guard extension", () => {
 	);
 
 	it.each([undefined, "", "0", "-1", "invalid", "Infinity"])(
-		"uses the 120-second limit and 10-second grace for invalid override %s",
+		"uses the 120-second limit for invalid override %s",
 		(override) => {
 			vi.stubEnv("PI_BASH_TIMEOUT_S", override);
 			const guarded = registeredHook()({ command: "echo ok", cwd: "/", env: {} });
-			expect(guarded.command).toBe("timeout --kill-after=10s 120s bash -c 'echo ok'");
+			expect(guarded.command).toBe("echo ok");
 			expect(guarded.env.PI_BASH_TIMEOUT_S).toBe("120");
 			expect(process.env.PI_BASH_TIMEOUT_S).toBe(override);
 		},
@@ -85,7 +85,7 @@ describe("bash guard extension", () => {
 			timeout: 5_000,
 		});
 		expect(child.stdout).toBe("3.5");
-		expect(guarded.command).toContain("timeout --kill-after=10s 3.5s bash -c");
+		expect(guarded.command).toBe('printf "%s" "$PI_BASH_TIMEOUT_S"');
 		expect(env.PI_BASH_TIMEOUT_S).toBe("99");
 		expect(process.env.PI_BASH_TIMEOUT_S).toBe("3.5");
 	});
