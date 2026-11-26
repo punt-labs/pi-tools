@@ -130,7 +130,7 @@ function errorMessage(error: unknown): string {
 /** File contents if the coder produced it, else null. */
 async function readIfPresent(path: string): Promise<string | null> {
 	try {
-		return redactCredential(await readFile(path, "utf8"));
+		return await readFile(path, "utf8");
 	} catch {
 		return null;
 	}
@@ -249,7 +249,7 @@ export default function piCoderExtension(pi: ExtensionAPI): void {
 				const report = coderOutput.report.slice(-800);
 				return textResult(
 					"pi_coder target contains " +
-						String(written.length) +
+						String(Buffer.byteLength(written, "utf8")) +
 						" bytes at " +
 						params.target_path +
 						" (" +
@@ -257,7 +257,7 @@ export default function piCoderExtension(pi: ExtensionAPI): void {
 						"ms); awaiting boss verification, not accepted.\n\nCoder self-test report (not independent proof):\n" +
 						report +
 						"\n--- file head ---\n" +
-						previewBody(written),
+						previewBody(redactCredential(written)),
 					{
 						coderUsage: {
 							inputTokens: coderOutput.inputTokens,

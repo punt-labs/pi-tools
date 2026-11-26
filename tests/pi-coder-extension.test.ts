@@ -235,6 +235,20 @@ describe("pi_coder execution contract", () => {
 		expect(JSON.stringify(result)).not.toContain("fake-echoed-coder-key");
 	});
 
+	it("reports actual UTF-8 file bytes before redacting the fake credential for display", async () => {
+		const fakeKey = "fake-byte-count-key";
+		const source = "π😀 " + fakeKey + "\n";
+		vi.stubEnv("PI_CODER_API_KEY", fakeKey);
+		fakeChild(assistant("self-tested " + fakeKey));
+		mocks.readFile.mockResolvedValue(source);
+		const result = await registeredTool().execute("1", { task: "write it", target_path: "out.ts" });
+		expect(result.content[0].text).toContain(
+			String(Buffer.byteLength(source, "utf8")) + " bytes at out.ts",
+		);
+		expect(JSON.stringify(result)).not.toContain(fakeKey);
+		expect(result.content[0].text).toContain("π😀 [REDACTED]");
+	});
+
 	it("treats assistant failure events as failure even with exit zero and a target file", async () => {
 		fakeChild(assistant("", { stopReason: "error", errorMessage: "fake provider unavailable" }));
 		const message = await failureMessage(
