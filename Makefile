@@ -1,7 +1,8 @@
 NPM ?= npm
-MARKDOWNLINT ?= markdownlint-cli2
+NODE ?= node
+MARKDOWNLINT ?= $(NPM) exec markdownlint-cli2 --
 
-.PHONY: help check lint typecheck test test-integration docs check-docs format format-check clean coverage tools smoke-pi
+.PHONY: help check lint typecheck test test-integration docs check-docs format format-check clean coverage tools smoke-pi smoke-coder
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-24s %s\n", $$1, $$2}'
@@ -29,10 +30,13 @@ test-integration: ## Run real-relay biff bridge integration test
 docs: check-docs ## Lint markdown
 
 check-docs: ## Lint markdown
-	$(MARKDOWNLINT) "**/*.md" "#node_modules" "#.direnv"
+	$(NODE) lib/lint-docs.ts $(MARKDOWNLINT)
 
-smoke-pi: ## Run pi RPC smoke test (requires pi + model API key)
+smoke-pi: ## Run Pi keep smoke test (requires pi + model API key)
 	./tests/smoke-pi.sh
+
+smoke-coder: ## Verify real Pi coder delegation against an isolated loopback provider
+	$(NODE) --experimental-strip-types tests/smoke-pi-coder.ts
 
 coverage: ## Run tests with coverage
 	$(NPM) exec vitest -- run --coverage

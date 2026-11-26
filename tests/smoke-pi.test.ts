@@ -1,0 +1,378 @@
+import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { copyFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
+import { promisify } from "node:util";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+const run = promisify(execFile);
+const repo = resolve(import.meta.dirname, "..");
+let fixture: string;
+let env: NodeJS.ProcessEnv;
+
+beforeEach(async () => {
+	await mkdir(join(repo, ".tmp"), { recursive: true });
+	fixture = await mkdtemp(join(repo, ".tmp", "keep-smoke-test-"));
+	const bin = join(fixture, "bin");
+	await mkdir(bin);
+	await writeFile(join(bin, "package.json"), '{"type":"commonjs"}');
+	await writeFile(
+		join(bin, "pi"),
+		`#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(process.env.FIXTURE + "/pi.invocations", "pi\\n");
+fs.writeFileSync(process.env.FIXTURE + "/pi.pid", String(process.pid));
+fs.writeFileSync(process.env.FIXTURE + "/pi.args", JSON.stringify(process.argv.slice(2)));
+const names = ["keep_run", "keep_capture", "keep_stop", "keep_list"];
+const args = process.argv.slice(2);
+const name = /named ([A-Za-z0-9_-]+)/.exec(args[args.indexOf("-p") + 1])[1];
+const scenario = process.env.SCENARIO;
+function eventFor(tool, text) {
+  return {type:"tool_execution_end",toolName:tool,isError:false,result:{content:[{type:"text",text}]}};
+}
+if (scenario === "unicode-success" || scenario === "unicode-credential") {
+  async function splitUtf8(stream, text) {
+    const bytes = Buffer.from(text);
+    let start = 0;
+    for (let index = 0; index < bytes.length; index++) {
+      if (bytes[index] >= 0xc0) {
+        stream.write(bytes.subarray(start, index + 1));
+        start = index + 1;
+        await new Promise(done => setTimeout(done, 15));
+      }
+    }
+    stream.write(bytes.subarray(start));
+  }
+  const events = scenario === "unicode-success" ? [
+    eventFor("keep_run", "Started: " + name),
+    eventFor("keep_capture", "keep-smoke-ok\\n雪🙂"),
+    eventFor("keep_stop", "Stopped: " + name),
+    eventFor("keep_list", "No active keep sessions"),
+  ] : [{type:"provider_error",message:process.env.PI_CODER_API_KEY + " 雪🙂"}];
+  void (async () => {
+    await splitUtf8(process.stdout, events.map(event => JSON.stringify(event)).join("\\n") + "\\n");
+    await splitUtf8(process.stderr, "diagnostic 雪🙂 " + (process.env.PI_CODER_API_KEY || "") + "\\n");
+    process.exit(scenario === "unicode-success" ? 0 : 7);
+  })();
+  return;
+}
+if (scenario === "early-list" || scenario === "early-list-then-final") {
+  console.log(JSON.stringify(eventFor("keep_list", "No active keep sessions")));
+}
+if (scenario === "assistant-recovered" || scenario === "assistant-incomplete-retry") {
+  console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"error",errorMessage:"recoverable fake provider failure"}}));
+}
+if (scenario === "unknown-option" || scenario === "unsupported-option") {
+  console.error("error: " + scenario.replace("-", " ") + " '--no-mcp'");
+  process.exit(2);
+}
+if (scenario === "credential-echo") {
+  console.log(JSON.stringify({type:"provider_error",message:"Fake provider echoed " + process.env.PI_CODER_API_KEY}));
+  console.error("Fake provider echoed " + process.env.PI_CODER_API_KEY);
+  process.exit(7);
+}
+if (scenario === "timeout") {
+  process.on("SIGTERM", () => {});
+  setInterval(() => {}, 1000);
+} else {
+  if (scenario !== "assistant-incomplete-retry") console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:names.join(" ")}]}}));
+  if (scenario !== "narration") {
+    for (const name of names) {
+      if ((scenario === "missing-call" || scenario === "early-list") && name === "keep_list") continue;
+      const session = /named ([A-Za-z0-9_-]+)/.exec(args[args.indexOf("-p") + 1])[1];
+      let text = name === "keep_run" ? "Started: " + session : name === "keep_stop" ? "Stopped: " + session : name === "keep_list" ? "No active keep sessions" : "keep-smoke-ok";
+      if (scenario === "text-error" && name === process.env.ERROR_TOOL) text = "Failed to perform keep operation";
+      console.log(JSON.stringify({type:"tool_execution_end",toolName:name,isError:scenario === "tool-error" && name === "keep_capture",result:{content:[{type:"text",text}]}}));
+    }
+  }
+  if (scenario === "assistant-error" || scenario === "assistant-aborted" || scenario === "assistant-length") {
+    console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:scenario.slice("assistant-".length),errorMessage:"Fake provider failed after tools " + process.env.PI_CODER_API_KEY,content:[]}}));
+  }
+  if (scenario === "assistant-recovered") {
+    console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:"Recovered; all tool checks completed"}]}}));
+  }
+  if (scenario === "assistant-incomplete-retry") {
+    console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"toolUse",content:[{type:"toolCall",id:"retry-call",name:"keep_list",arguments:{}}]}}));
+  }
+  process.exit(scenario === "pi-failure" ? 7 : 0);
+}
+`,
+		{ mode: 0o755 },
+	);
+	await writeFile(
+		join(bin, "tmux"),
+		`#!${process.execPath}
+require("node:fs").appendFileSync(process.env.FIXTURE + "/tmux.calls", JSON.stringify(process.argv.slice(2)) + "\\n");
+`,
+		{ mode: 0o755 },
+	);
+	// Deliberately supply no model credentials or inherited HOME configuration.
+	env = {
+		PATH: bin + ":" + (process.env.PATH ?? ""),
+		HOME: fixture,
+		FIXTURE: fixture,
+		PI_KEEP_SMOKE_TIMEOUT_S: "0.5",
+	};
+});
+
+afterEach(async () => {
+	await rm(fixture, { recursive: true, force: true });
+});
+
+async function smoke(scenario: string, extraEnv: NodeJS.ProcessEnv = {}) {
+	try {
+		const result = await run("bash", [join(repo, "tests", "smoke-pi.sh")], {
+			cwd: fixture,
+			env: { ...env, SCENARIO: scenario, ...extraEnv },
+			timeout: 8_000,
+		});
+		return { ...result, code: 0 };
+	} catch (error) {
+		const failure = error as Error & { code: number; stdout: string; stderr: string };
+		return { code: failure.code, stdout: failure.stdout, stderr: failure.stderr };
+	}
+}
+
+describe("keep smoke entry point", () => {
+	it("preserves split UTF-8 in actual tool events and both retained streams", async () => {
+		const result = await smoke("unicode-success", { PI_KEEP_SMOKE_TIMEOUT_S: "3" });
+		expect(result.code, result.stdout + result.stderr).toBe(0);
+		const artifacts = /^Artifacts: (.+)$/m.exec(result.stdout)?.[1];
+		if (!artifacts) throw new Error("missing artifacts");
+		for (const file of ["pi.jsonl", "pi.stderr"]) {
+			const text = await readFile(join(artifacts, file), "utf8");
+			expect(text).toContain("雪🙂");
+			expect(text).not.toContain("\ufffd");
+		}
+	});
+
+	it("redacts a non-ASCII fake credential split across pipe chunks", async () => {
+		const key = "fake-é-密-🔑-credential";
+		const result = await smoke("unicode-credential", {
+			PI_CODER_API_KEY: key,
+			PI_KEEP_SMOKE_TIMEOUT_S: "3",
+		});
+		expect(result.code).toBe(7);
+		const artifacts = /^Artifacts: (.+)$/m.exec(result.stdout)?.[1];
+		if (!artifacts) throw new Error("missing artifacts");
+		for (const file of ["pi.jsonl", "pi.stderr"]) {
+			const text = await readFile(join(artifacts, file), "utf8");
+			expect(text).toContain("[REDACTED]");
+			expect(text).not.toContain("fake-");
+			expect(text).toContain("雪🙂");
+			expect(text).not.toContain("\ufffd");
+		}
+	});
+
+	it("does not count an empty registry check before run as a post-stop check", async () => {
+		const result = await smoke("early-list");
+		expect(result.code, result.stdout + result.stderr).toBe(1);
+		expect(result.stdout).not.toContain("All smoke tests passed");
+	});
+
+	it("allows early registry inspection when a later empty check follows stop", async () => {
+		const result = await smoke("early-list-then-final");
+		expect(result.code, result.stdout + result.stderr).toBe(0);
+	});
+
+	it("accepts a completed assistant retry after an earlier recoverable failure", async () => {
+		const result = await smoke("assistant-recovered");
+		expect(result.code, result.stdout + result.stderr).toBe(0);
+		expect(result.stdout).toContain("All smoke tests passed");
+	});
+
+	it("does not clear a prior assistant error on an intermediate toolUse retry", async () => {
+		const result = await smoke("assistant-incomplete-retry");
+		expect(result.code, result.stdout + result.stderr).toBe(1);
+		expect(result.stdout + result.stderr).toContain("recoverable fake provider failure");
+		expect(result.stdout).not.toContain("All smoke tests passed");
+	});
+
+	it("rejects terminal assistant length truncation after successful tools", async () => {
+		const result = await smoke("assistant-length");
+		expect(result.code, result.stdout + result.stderr).toBe(1);
+		expect(result.stdout).not.toContain("All smoke tests passed");
+		expect(result.stdout + result.stderr).toContain("length");
+	});
+
+	it.each(["unknown-option", "unsupported-option"])(
+		"explains compatible Pi CLI requirements on %s without retrying or dropping flags",
+		async (scenario) => {
+			const result = await smoke(scenario);
+			expect(result.code).toBe(2);
+			expect(result.stdout + result.stderr).toContain("1.6.1");
+			expect(result.stdout + result.stderr).toContain("PATH");
+			expect(result.stdout + result.stderr).toMatch(/compatible Pi CLI/i);
+			expect(await readFile(join(fixture, "pi.invocations"), "utf8")).toBe("pi\n");
+			const args = JSON.parse(await readFile(join(fixture, "pi.args"), "utf8")) as string[];
+			expect(args).toContain("--no-mcp");
+			expect(args).toContain("--no-extensions");
+		},
+	);
+
+	it.each(["error", "aborted"])(
+		"rejects assistant %s after successful tool events without exposing a fake key",
+		async (reason) => {
+			const key = "fake-assistant-failure-key-not-a-credential";
+			const result = await smoke("assistant-" + reason, { PI_CODER_API_KEY: key });
+			expect(result.code, result.stdout + result.stderr).toBe(1);
+			expect(result.stdout).not.toContain("All smoke tests passed");
+			expect(result.stdout + result.stderr).toContain(reason);
+			expect(result.stdout + result.stderr).not.toContain(key);
+		},
+	);
+
+	it.each(["plain", "escaped", "metadata"])(
+		"redacts the optional fake credential from both artifacts and console output (%s)",
+		async (variant) => {
+			const key =
+				variant === "metadata"
+					? basename(fixture)
+					: variant === "escaped"
+						? 'fake-"quoted\\key-only'
+						: "fake-keep-smoke-key-not-a-credential";
+			const result = await smoke("credential-echo", { PI_CODER_API_KEY: key });
+			expect(result.code).toBe(7);
+			const directories = await readdir(join(fixture, ".tmp"));
+			const artifactName = directories.find((entry) => entry.startsWith("keep-smoke-"));
+			if (!artifactName) throw new Error("missing artifact directory");
+			const artifacts = join(fixture, ".tmp", artifactName);
+			for (const file of ["pi.jsonl", "pi.stderr"]) {
+				const captured = await readFile(join(artifacts, file), "utf8");
+				expect(captured, file).not.toContain(key);
+				expect(captured, file).not.toContain(JSON.stringify(key).slice(1, -1));
+				expect(captured, file).toContain("[REDACTED]");
+			}
+			expect(result.stdout + result.stderr).not.toContain(key);
+			expect(result.stdout + result.stderr).toContain("exit 7");
+		},
+	);
+
+	it("accepts completed tool events, creates artifacts, and cleans only its unique session", async () => {
+		const first = await smoke("success");
+		expect(first.code, first.stdout + first.stderr).toBe(0);
+		expect(first.stdout).toContain("All smoke tests passed");
+		const artifactPath = /^Artifacts: (.+)$/m.exec(first.stdout)?.[1];
+		expect(artifactPath).toBeDefined();
+		if (!artifactPath) throw new Error("missing artifact path");
+		expect(await readFile(join(artifactPath, "pi.jsonl"), "utf8")).toContain("tool_execution_end");
+		expect(await readFile(join(artifactPath, "pi.stderr"), "utf8")).toBe("");
+		const args = JSON.parse(await readFile(join(fixture, "pi.args"), "utf8")) as string[];
+		expect(args).toContain("json");
+		expect(args).toContain("--no-extensions");
+		const extension = args[args.indexOf("-e") + 1];
+		expect(extension).toBe(join(repo, "extensions", "keep.ts"));
+		const calls = (await readFile(join(fixture, "tmux.calls"), "utf8"))
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as string[]);
+		expect(calls).toHaveLength(1);
+		expect(calls[0].slice(0, 2)).toEqual(["kill-session", "-t"]);
+		expect(calls[0][2]).toMatch(/^=keep-smoke-[A-Za-z0-9_-]+$/);
+		const prompt = args[args.indexOf("-p") + 1];
+		expect(prompt).toContain(calls[0][2].slice("=keep-".length));
+		const second = await smoke("success");
+		expect(second.code, second.stdout + second.stderr).toBe(0);
+		const finalCalls = (await readFile(join(fixture, "tmux.calls"), "utf8")).trim().split("\n");
+		expect(JSON.parse(finalCalls[1])).not.toEqual(calls[0]);
+	});
+
+	it.each(["missing-call", "narration", "tool-error"])(
+		"rejects %s despite tool names in narration",
+		async (scenario) => {
+			const result = await smoke(scenario);
+			expect(result.code).toBe(1);
+			expect(result.stdout + result.stderr).toMatch(/missing|failed|successful/i);
+			expect(result.stdout).not.toContain("All smoke tests passed");
+		},
+	);
+
+	it("preserves a nonzero Pi exit even when all tool events are present", async () => {
+		const result = await smoke("pi-failure");
+		expect(result.code, result.stdout + result.stderr).toBe(7);
+		expect(result.stdout + result.stderr).toContain("exit 7");
+		expect(await readFile(join(fixture, "tmux.calls"), "utf8")).toContain("kill-session");
+	});
+
+	it("bounds actual Pi execution and kills the child before returning", async () => {
+		const result = await smoke("timeout");
+		expect(result.code, result.stdout + result.stderr).toBe(124);
+		expect(result.stdout + result.stderr).toContain("timed out");
+		const pid = Number(await readFile(join(fixture, "pi.pid"), "utf8"));
+		assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+		expect(await readFile(join(fixture, "tmux.calls"), "utf8")).toContain("kill-session");
+	}, 10_000);
+
+	it("keeps make smoke-pi as the public entry point without contacting real tools", async () => {
+		const result = await run("make", ["smoke-pi"], {
+			cwd: repo,
+			env: { ...env, SCENARIO: "success" },
+			timeout: 8_000,
+		});
+		expect(result.stdout).toContain("All smoke tests passed");
+		const artifactPath = /^Artifacts: (.+)$/m.exec(result.stdout)?.[1];
+		expect(artifactPath).toBeDefined();
+		if (artifactPath) await rm(artifactPath, { recursive: true, force: true });
+	});
+
+	it.each(["keep_run", "keep_capture", "keep_stop", "keep_list"])(
+		"rejects %s failure text even when the Pi event says isError false",
+		async (tool) => {
+			const result = await smoke("text-error", { ERROR_TOOL: tool });
+			expect(result.code, result.stdout + result.stderr).toBe(1);
+			expect(result.stdout + result.stderr).toContain(tool);
+		},
+	);
+
+	it("cleans the detached Pi group after repeated interrupts", async () => {
+		const child = spawn("bash", [join(repo, "tests", "smoke-pi.sh")], {
+			cwd: fixture,
+			env: { ...env, SCENARIO: "timeout", PI_KEEP_SMOKE_TIMEOUT_S: "10" },
+			stdio: "ignore",
+		});
+		const closed = once(child, "close");
+		let piPid: number | undefined;
+		try {
+			const end = Date.now() + 3000;
+			while (!piPid && Date.now() < end) {
+				try {
+					piPid = Number(await readFile(join(fixture, "pi.pid"), "utf8"));
+				} catch {
+					await new Promise((done) => setTimeout(done, 10));
+				}
+			}
+			expect(piPid).toBeDefined();
+			child.kill("SIGINT");
+			await new Promise((done) => setTimeout(done, 50));
+			child.kill("SIGINT");
+			await closed;
+			if (!piPid) throw new Error("missing fake Pi pid");
+			const stoppedPid = piPid;
+			assert.throws(() => process.kill(stoppedPid, 0), { code: "ESRCH" });
+			expect(await readFile(join(fixture, "tmux.calls"), "utf8")).toContain("kill-session");
+		} finally {
+			if (piPid) {
+				try {
+					process.kill(-piPid, "SIGKILL");
+				} catch {
+					/* already stopped */
+				}
+			}
+			child.kill("SIGKILL");
+		}
+	}, 8000);
+
+	it("loads its helper when bash invokes the script by bare filename", async () => {
+		const scripts = join(fixture, "tests");
+		await mkdir(scripts);
+		await copyFile(join(repo, "tests", "smoke-pi.sh"), join(scripts, "smoke-pi.sh"));
+		await copyFile(join(repo, "tests", "smoke-keep.ts"), join(scripts, "smoke-keep.ts"));
+		const result = await run("bash", ["smoke-pi.sh"], {
+			cwd: scripts,
+			env: { ...env, SCENARIO: "success" },
+			timeout: 8000,
+		});
+		expect(result.stdout).toContain("All smoke tests passed");
+	});
+});
