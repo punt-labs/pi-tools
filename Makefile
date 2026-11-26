@@ -1,4 +1,5 @@
 NPM ?= npm
+NODE ?= node
 MARKDOWNLINT ?= $(NPM) exec markdownlint-cli2 --
 
 .PHONY: help check lint typecheck test test-integration docs check-docs format format-check clean coverage tools smoke-pi
@@ -29,7 +30,7 @@ test-integration: ## Run real-relay biff bridge integration test
 docs: check-docs ## Lint markdown
 
 check-docs: ## Lint markdown
-	$(MARKDOWNLINT) "**/*.md" "#node_modules" "#.direnv"
+	$(NODE) lib/lint-docs.ts $(MARKDOWNLINT)
 
 smoke-pi: ## Run pi RPC smoke test (requires pi + model API key)
 	./tests/smoke-pi.sh

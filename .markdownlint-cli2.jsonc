@@ -1,6 +1,7 @@
 {
-	// Runtime captures and scratch files follow the repository's ignore rules.
-	"gitignore": true,
+	// lib/lint-docs.ts selects tracked files. Ancestor ignores must not hide a
+	// linked worktree just because it lives under an ignored workspace directory.
+	"gitignore": false,
 	// .punt-labs/punt/ holds the tracker guide deposited by punt-kit and edited
 	// there, never here, so its markdown is not this repo's to lint. Scope the
 	// ignore to that subtree so any other .punt-labs/ markdown is still linted.
