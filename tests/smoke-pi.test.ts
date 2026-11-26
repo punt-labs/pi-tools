@@ -60,7 +60,7 @@ if (scenario === "unicode-success" || scenario === "unicode-credential") {
 if (scenario === "early-list" || scenario === "early-list-then-final") {
   console.log(JSON.stringify(eventFor("keep_list", "No active keep sessions")));
 }
-if (scenario === "assistant-recovered") {
+if (scenario === "assistant-recovered" || scenario === "assistant-incomplete-retry") {
   console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"error",errorMessage:"recoverable fake provider failure"}}));
 }
 if (scenario === "unknown-option" || scenario === "unsupported-option") {
@@ -76,7 +76,7 @@ if (scenario === "timeout") {
   process.on("SIGTERM", () => {});
   setInterval(() => {}, 1000);
 } else {
-  console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:names.join(" ")}]}}));
+  if (scenario !== "assistant-incomplete-retry") console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:names.join(" ")}]}}));
   if (scenario !== "narration") {
     for (const name of names) {
       if ((scenario === "missing-call" || scenario === "early-list") && name === "keep_list") continue;
@@ -91,6 +91,9 @@ if (scenario === "timeout") {
   }
   if (scenario === "assistant-recovered") {
     console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:"Recovered; all tool checks completed"}]}}));
+  }
+  if (scenario === "assistant-incomplete-retry") {
+    console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"toolUse",content:[{type:"toolCall",id:"retry-call",name:"keep_list",arguments:{}}]}}));
   }
   process.exit(scenario === "pi-failure" ? 7 : 0);
 }
@@ -177,6 +180,13 @@ describe("keep smoke entry point", () => {
 		const result = await smoke("assistant-recovered");
 		expect(result.code, result.stdout + result.stderr).toBe(0);
 		expect(result.stdout).toContain("All smoke tests passed");
+	});
+
+	it("does not clear a prior assistant error on an intermediate toolUse retry", async () => {
+		const result = await smoke("assistant-incomplete-retry");
+		expect(result.code, result.stdout + result.stderr).toBe(1);
+		expect(result.stdout + result.stderr).toContain("recoverable fake provider failure");
+		expect(result.stdout).not.toContain("All smoke tests passed");
 	});
 
 	it("rejects terminal assistant length truncation after successful tools", async () => {
