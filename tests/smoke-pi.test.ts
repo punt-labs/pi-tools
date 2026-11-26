@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -23,6 +24,8 @@ const fs = require("node:fs");
 fs.writeFileSync(process.env.FIXTURE + "/pi.pid", String(process.pid));
 fs.writeFileSync(process.env.FIXTURE + "/pi.args", JSON.stringify(process.argv.slice(2)));
 const names = ["keep_run", "keep_capture", "keep_stop", "keep_list"];
+const args = process.argv.slice(2);
+const name = /named ([A-Za-z0-9_-]+)/.exec(args[args.indexOf("-p") + 1])[1];
 const scenario = process.env.SCENARIO;
 if (scenario === "timeout") {
   process.on("SIGTERM", () => {});
@@ -32,7 +35,10 @@ if (scenario === "timeout") {
   if (scenario !== "narration") {
     for (const name of names) {
       if (scenario === "missing-call" && name === "keep_list") continue;
-      console.log(JSON.stringify({type:"tool_execution_end",toolName:name,isError:scenario === "tool-error" && name === "keep_capture",result:{content:[{type:"text",text:"keep-smoke-ok"}]}}));
+      const session = /named ([A-Za-z0-9_-]+)/.exec(args[args.indexOf("-p") + 1])[1];
+      let text = name === "keep_run" ? "Started: " + session : name === "keep_stop" ? "Stopped: " + session : name === "keep_list" ? "No active keep sessions" : "keep-smoke-ok";
+      if (scenario === "text-error" && name === process.env.ERROR_TOOL) text = "Failed to perform keep operation";
+      console.log(JSON.stringify({type:"tool_execution_end",toolName:name,isError:scenario === "tool-error" && name === "keep_capture",result:{content:[{type:"text",text}]}}));
     }
   }
   process.exit(scenario === "pi-failure" ? 7 : 0);
@@ -60,11 +66,11 @@ afterEach(async () => {
 	await rm(fixture, { recursive: true, force: true });
 });
 
-async function smoke(scenario: string) {
+async function smoke(scenario: string, extraEnv: NodeJS.ProcessEnv = {}) {
 	try {
 		const result = await run("bash", [join(repo, "tests", "smoke-pi.sh")], {
 			cwd: fixture,
-			env: { ...env, SCENARIO: scenario },
+			env: { ...env, SCENARIO: scenario, ...extraEnv },
 			timeout: 8_000,
 		});
 		return { ...result, code: 0 };
@@ -140,5 +146,65 @@ describe("keep smoke entry point", () => {
 		const artifactPath = /^Artifacts: (.+)$/m.exec(result.stdout)?.[1];
 		expect(artifactPath).toBeDefined();
 		if (artifactPath) await rm(artifactPath, { recursive: true, force: true });
+	});
+
+	it.each(["keep_run", "keep_capture", "keep_stop", "keep_list"])(
+		"rejects %s failure text even when the Pi event says isError false",
+		async (tool) => {
+			const result = await smoke("text-error", { ERROR_TOOL: tool });
+			expect(result.code, result.stdout + result.stderr).toBe(1);
+			expect(result.stdout + result.stderr).toContain(tool);
+		},
+	);
+
+	it("cleans the detached Pi group after repeated interrupts", async () => {
+		const child = spawn("bash", [join(repo, "tests", "smoke-pi.sh")], {
+			cwd: fixture,
+			env: { ...env, SCENARIO: "timeout", PI_KEEP_SMOKE_TIMEOUT_S: "10" },
+			stdio: "ignore",
+		});
+		const closed = once(child, "close");
+		let piPid: number | undefined;
+		try {
+			const end = Date.now() + 3000;
+			while (!piPid && Date.now() < end) {
+				try {
+					piPid = Number(await readFile(join(fixture, "pi.pid"), "utf8"));
+				} catch {
+					await new Promise((done) => setTimeout(done, 10));
+				}
+			}
+			expect(piPid).toBeDefined();
+			child.kill("SIGINT");
+			await new Promise((done) => setTimeout(done, 50));
+			child.kill("SIGINT");
+			await closed;
+			if (!piPid) throw new Error("missing fake Pi pid");
+			const stoppedPid = piPid;
+			assert.throws(() => process.kill(stoppedPid, 0), { code: "ESRCH" });
+			expect(await readFile(join(fixture, "tmux.calls"), "utf8")).toContain("kill-session");
+		} finally {
+			if (piPid) {
+				try {
+					process.kill(-piPid, "SIGKILL");
+				} catch {
+					/* already stopped */
+				}
+			}
+			child.kill("SIGKILL");
+		}
+	}, 8000);
+
+	it("loads its helper when bash invokes the script by bare filename", async () => {
+		const scripts = join(fixture, "tests");
+		await mkdir(scripts);
+		await copyFile(join(repo, "tests", "smoke-pi.sh"), join(scripts, "smoke-pi.sh"));
+		await copyFile(join(repo, "tests", "smoke-keep.ts"), join(scripts, "smoke-keep.ts"));
+		const result = await run("bash", ["smoke-pi.sh"], {
+			cwd: scripts,
+			env: { ...env, SCENARIO: "success" },
+			timeout: 8000,
+		});
+		expect(result.stdout).toContain("All smoke tests passed");
 	});
 });

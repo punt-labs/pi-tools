@@ -7,7 +7,12 @@ import { promisify } from "node:util";
 const EXPECTED_TOOLS = ["keep_run", "keep_capture", "keep_stop", "keep_list"];
 const OUTPUT_LIMIT = 1024 * 1024;
 
-function checkToolEvents(stdout: string): void {
+function checkToolEvents(stdout: string, name: string): void {
+	const expectedText: Record<string, string> = {
+		keep_run: "Started: " + name,
+		keep_stop: "Stopped: " + name,
+		keep_list: "No active keep sessions",
+	};
 	const completed = new Set<string>();
 	for (const line of stdout.split("\n")) {
 		let parsed: unknown;
@@ -25,7 +30,28 @@ function checkToolEvents(stdout: string): void {
 		)
 			continue;
 		if (event.isError === true) throw new Error(event.toolName + " failed");
-		if (event.isError === false) completed.add(event.toolName);
+		if (event.isError !== false) continue;
+		const result = event.result;
+		const content =
+			typeof result === "object" && result !== null
+				? (result as Record<string, unknown>).content
+				: undefined;
+		const text = Array.isArray(content)
+			? content
+					.filter(
+						(part): part is Record<string, unknown> => typeof part === "object" && part !== null,
+					)
+					.filter((part) => part.type === "text" && typeof part.text === "string")
+					.map((part) => String(part.text))
+					.join("\n")
+					.trim()
+			: "";
+		const valid =
+			event.toolName === "keep_capture"
+				? text.split(/\r?\n/).includes("keep-smoke-ok")
+				: text === expectedText[event.toolName];
+		if (!valid) throw new Error(event.toolName + " returned an unexpected or failed result");
+		completed.add(event.toolName);
 	}
 	for (const tool of EXPECTED_TOOLS) {
 		if (!completed.has(tool)) throw new Error("Missing successful tool event: " + tool);
@@ -92,8 +118,8 @@ async function main(): Promise<number> {
 	}
 	const interrupt = () => stop("Pi smoke interrupted", 130);
 	const terminate = () => stop("Pi smoke terminated", 143);
-	process.once("SIGINT", interrupt);
-	process.once("SIGTERM", terminate);
+	process.on("SIGINT", interrupt);
+	process.on("SIGTERM", terminate);
 	const deadline = setTimeout(
 		() => stop("Pi timed out after " + String(seconds) + "s", 124),
 		seconds * 1000,
@@ -121,19 +147,19 @@ async function main(): Promise<number> {
 			console.error("FAIL: Pi exited with exit " + String(code));
 			return code;
 		}
-		checkToolEvents(stdout);
+		checkToolEvents(stdout, name);
 		console.log("All smoke tests passed.");
 		return 0;
 	} finally {
 		clearTimeout(deadline);
-		if (escalation) clearTimeout(escalation);
-		process.removeListener("SIGINT", interrupt);
-		process.removeListener("SIGTERM", terminate);
 		killGroup("SIGKILL");
 		// Exact matching prevents a unique name from becoming a tmux prefix match.
 		await promisify(execFile)("tmux", ["kill-session", "-t", "=keep-" + name], {
 			timeout: 2000,
 		}).catch(() => undefined);
+		if (escalation) clearTimeout(escalation);
+		process.removeListener("SIGINT", interrupt);
+		process.removeListener("SIGTERM", terminate);
 	}
 }
 
