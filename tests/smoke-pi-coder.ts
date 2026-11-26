@@ -16,6 +16,8 @@ const PROVIDER = "loopback-coder-smoke";
 const FILE_BODY = 'export const answer = 42;\nconsole.log("fixture:42");\n';
 const MAX_OUTPUT = 1024 * 1024;
 const DEADLINE_MS = 45_000;
+let interrupted = false;
+let nextToolCallId = 0;
 const ISOLATION_FLAGS = [
 	"--offline",
 	"--no-session",
@@ -90,7 +92,8 @@ function bashCheck(who: string): string {
 		'if(fs.readFileSync("answer.js","utf8")!==' +
 		JSON.stringify(FILE_BODY) +
 		")process.exit(94);" +
-		`console.log(\"${who}_VERIFIED_KEY_ABSENT\");'`
+		'import("./answer.js").then(m=>{if(m.answer!==42)process.exit(95);' +
+		`console.log(\"${who}_VERIFIED_KEY_ABSENT\");});'`
 	);
 }
 
@@ -115,7 +118,7 @@ function reply(response: ServerResponse, model: string, call?: Call, text?: stri
 			tool_calls: [
 				{
 					index: 0,
-					id: "call_" + call.name,
+					id: "call_" + call.name + "_" + String(++nextToolCallId),
 					type: "function",
 					function: { name: call.name, arguments: JSON.stringify(call.args) },
 				},
@@ -182,7 +185,7 @@ async function handleRequest(
 	} else {
 		assert.equal(chat.model, "coder-fixture", "unexpected model: never contact a public model");
 		const step = state.coder++;
-		assert.ok(step < 3, "coder exceeded scripted request budget");
+		assert.ok(step < 4, "coder exceeded scripted request budget");
 		if (scenario === "missing-file") {
 			reply(response, chat.model, undefined, "I did not write the requested file.");
 		} else if (step === 0) {
@@ -193,6 +196,12 @@ async function handleRequest(
 			});
 		} else if (step === 1) {
 			reply(response, chat.model, { name: "bash", args: { command: bashCheck("CODER") } });
+		} else if (step === 2) {
+			// Silent and self-limited even if the guard is broken: no runaway output or process.
+			reply(response, chat.model, {
+				name: "bash",
+				args: { command: "node -e 'setTimeout(()=>process.exit(99),10000)'" },
+			});
 		} else {
 			reply(response, chat.model, undefined, "Wrote answer.js; bounded bash content check passed.");
 		}
@@ -246,16 +255,28 @@ async function runPi(cwd: string, env: NodeJS.ProcessEnv, args: string[], state:
 	const deadline = setTimeout(() => {
 		stop("Pi exceeded 45 second smoke deadline");
 	}, DEADLINE_MS);
+	const interrupt = () => {
+		interrupted = true;
+		stop("Smoke interrupted; terminating owned Pi process group");
+	};
+	process.once("SIGINT", interrupt);
+	process.once("SIGTERM", interrupt);
 	try {
 		const [code, signal] = (await once(child, "close")) as [number | null, string | null];
 		await writeFile(join(cwd, "parent.jsonl"), stdout);
 		await writeFile(join(cwd, "parent.stderr"), stderr);
+		await writeFile(join(cwd, "requests.json"), JSON.stringify(state.requests, null, 2));
+		await writeFile(join(cwd, "process-argv.json"), JSON.stringify(state.commands, null, 2));
+		await writeFile(join(cwd, "fixture-errors.json"), JSON.stringify(state.errors, null, 2));
 		assert.ok(!stdout.includes(FAKE_KEY), "credential in stdout");
 		assert.ok(!stderr.includes(FAKE_KEY), "credential in stderr");
+		assert.deepEqual(state.errors, [], "loopback provider assertions");
 		assert.equal(failure, "", failure);
 		assert.equal(code, 0, `Pi exited ${String(code)} (${String(signal)}): ${stderr.slice(-2000)}`);
 		return stdout;
 	} finally {
+		process.removeListener("SIGINT", interrupt);
+		process.removeListener("SIGTERM", interrupt);
 		clearTimeout(deadline);
 		if (escalation) clearTimeout(escalation);
 		kill("SIGKILL");
@@ -317,7 +338,7 @@ async function runScenario(repo: string, root: string, scenario: Scenario): Prom
 			PI_OFFLINE: "1",
 			PI_TELEMETRY: "0",
 			PI_CODER_API_KEY: FAKE_KEY,
-			PI_BASH_TIMEOUT_S: "5",
+			PI_BASH_TIMEOUT_S: "2",
 		};
 		if (scenario !== "missing-provider") env.PI_CODER_PROVIDER = PROVIDER;
 		if (scenario !== "missing-model") env.PI_CODER_MODEL = "coder-fixture";
@@ -341,19 +362,24 @@ async function runScenario(repo: string, root: string, scenario: Scenario): Prom
 			],
 			state,
 		);
-		await writeFile(join(cwd, "requests.json"), JSON.stringify(state.requests, null, 2));
-		await writeFile(join(cwd, "process-argv.json"), JSON.stringify(state.commands, null, 2));
-		assert.deepEqual(state.errors, [], "loopback provider assertions");
 		const plannerResults = toolMessages(state.requests, "planner-fixture");
 		const coderResult = stdout
 			.trim()
 			.split("\n")
-			.map((line) => JSON.parse(line) as ToolEvent)
+			.map((line, index) => {
+				try {
+					return JSON.parse(line) as ToolEvent;
+				} catch {
+					throw new Error(
+						`${scenario}: invalid parent JSON line ${String(index + 1)}; inspect parent.jsonl`,
+					);
+				}
+			})
 			.find((event) => event.type === "tool_execution_end" && event.toolName === "pi_coder");
 		assert.ok(coderResult, "registered pi_coder must execute through real Pi");
 		if (scenario === "success") {
 			assert.equal(await readFile(join(cwd, "answer.js"), "utf8"), FILE_BODY);
-			assert.equal(state.coder, 3, "real nested Pi must complete write/bash/report turns");
+			assert.equal(state.coder, 4, "real nested Pi must complete write/check/timeout/report turns");
 			const nestedArgs = state.commands.find((argv) => argv.includes("coder-fixture"));
 			assert.ok(nestedArgs, "must observe actual nested Pi process argv");
 			for (const flag of ISOLATION_FLAGS) {
@@ -361,6 +387,7 @@ async function runScenario(repo: string, root: string, scenario: Scenario): Prom
 			}
 			assert.equal(state.planner, 3, "parent must independently verify the file");
 			assert.match(toolMessages(state.requests, "coder-fixture"), /CODER_VERIFIED_KEY_ABSENT/);
+			assert.match(toolMessages(state.requests, "coder-fixture"), /Command exited with code 124/);
 			assert.match(plannerResults, /BOSS_VERIFIED_KEY_ABSENT/);
 			assert.match(
 				plannerResults,
@@ -368,8 +395,8 @@ async function runScenario(repo: string, root: string, scenario: Scenario): Prom
 			);
 			assert.equal(coderResult.isError, false);
 			assert.deepEqual(coderResult.result?.details?.coderUsage, {
-				inputTokens: 33,
-				outputTokens: 21,
+				inputTokens: 44,
+				outputTokens: 28,
 				reasoningTokens: 0,
 			});
 		} else if (scenario === "missing-file") {
@@ -414,14 +441,26 @@ async function main(): Promise<void> {
 	await mkdir(join(DEFAULT_REPO, ".tmp"), { recursive: true });
 	const root = await mkdtemp(join(DEFAULT_REPO, ".tmp", "smoke-coder-"));
 	console.log("Artifacts: " + root);
+	const failures: string[] = [];
 	for (const scenario of [
 		"success",
 		"missing-file",
 		"missing-provider",
 		"missing-model",
 	] as const) {
-		await runScenario(repo, root, scenario);
+		try {
+			await runScenario(repo, root, scenario);
+		} catch (error) {
+			failures.push(scenario);
+			console.error(`FAIL ${scenario}: ${String(error).slice(0, 2000)}`);
+		}
+		if (interrupted) break;
 	}
+	assert.equal(
+		failures.length,
+		0,
+		`${String(failures.length)} smoke scenarios failed: ${failures.join(", ")}`,
+	);
 	console.log("PASS installed parent + nested Pi; loopback-only fixtures; zero paid model tokens");
 }
 
