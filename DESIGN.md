@@ -579,6 +579,11 @@ The child receives a self-contained task, writes the requested file on the
 shared filesystem, and uses its tools to compile, run, test, and repair it.
 Resolve relative target paths against the calling working directory.
 
+Use Pi's active tool-context workspace for both relative target resolution and
+the nested process's working directory. Require delegation through tool
+guidance only when configuration is valid as the extension loads; otherwise
+ordinary editing tools remain available.
+
 Start a fresh, non-persistent Pi conversation for each call. Do not forward the
 parent conversation or earlier worker calls. Include relevant contracts and
 observed failures explicitly in each task. Files remain shared and readable;
@@ -624,7 +629,8 @@ UTF-8 bytes, independently of credential redaction in the preview.
   usage, or model cost. Fast output can still exhaust storage.
 - The 8 MiB transcript cap bounds retained child-process output, not shell
   output files, disk spill, or total worker runtime. It is not a disk quota.
-- Node.js 24, Bash, and POSIX process groups are required; GNU `timeout` is not.
+- Node.js 24, Bash, POSIX process groups, and `ps` are required; GNU `timeout`
+  is not.
   Linux execution is checked; macOS execution is not yet checked.
 - Processes that deliberately create another session can escape command-group
   supervision. This mechanism does not restrict same-user access or credentials.

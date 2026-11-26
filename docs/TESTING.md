@@ -12,7 +12,7 @@ checks are separate integration tiers with different prerequisites.
   tool registration, provider configuration, shell environments, and reporting.
   These are integration checks without a live provider or relay.
 - Local process tests: execute guarded shell commands, including termination
-  of a runaway command. Require Node.js 24, Bash, and POSIX process groups,
+  of a runaway command. Require Node.js 24, Bash, POSIX process groups, and `ps`,
   but no network or GNU `timeout`.
 - TS typecheck: all extensions and lib code compile cleanly.
   Automated.
@@ -83,6 +83,8 @@ The coder and guard tests also exercise extension registration and execution:
   behavior, on-disk file reporting, and failure paths through a fake Pi host
 - `bash-guard-extension.test.ts` — registered bash-tool behavior, timeout
   configuration, and removal of `PI_CODER_API_KEY` from shell environments
+- `bash-guard-settings.test.ts` — effective command prefixes, configured shell
+  wrappers, workspace selection, and credential filtering through the Bash tool
 
 These run under `make test` and `make check`. Controlled processes and fake
 hosts do not prove that a real Pi provider accepts the configuration or that
@@ -107,13 +109,14 @@ without errors.
 ## Markdown lint
 
 `lib/lint-docs.ts` selects explicit tracked Markdown paths from the current Git
-worktree's index, then passes them to markdownlint. This works even when the
+worktree's index, then passes them to markdownlint as literal filenames, not
+glob patterns. This works even when the
 worktree is inside an ignored parent directory. Stage new Markdown files before
 running this gate so they are included.
 
 Dependency documentation, untracked runtime captures and scratch files, and
 the deposited tracker guide under `.punt-labs/punt/` are not repository-authored
-documentation. The deposited guide remains excluded by the lint configuration.
+documentation. The selector explicitly excludes the deposited guide.
 Audit the tracked inventory with `git ls-files '*.md'`; do not treat captured
 session logs as this repository's writing.
 
@@ -156,8 +159,11 @@ extension:
 - result text must confirm the unique session started and stopped, capture
   the expected output marker, and report an empty keep registry; text-only
   failures cannot pass merely because Pi sets `isError` to false
-- assistant `message_end` events with `stopReason` set to `error` or `aborted`
-  fail the smoke even after all required tools completed and Pi exited zero
+- those successful events must occur in run, capture, stop, empty-list order;
+  an earlier registry inspection cannot replace the post-stop check
+- the final assistant `message_end` outcome must not be `error`, `aborted`, or
+  `length`, even after successful tools and exit zero; a later completed
+  assistant retry can recover from an earlier provider error
 
 Run separately because it requires Pi, tmux, a configured model provider, and
 Node.js with `--experimental-strip-types` support:
@@ -177,6 +183,8 @@ Each run creates `.tmp/keep-smoke-*` artifacts in its working directory and
 uses a unique tmux name. Cleanup targets only that exact session and the owned
 Pi process group. Captured stdout and stderr each have a 1,048,576-character
 test-harness limit. These harness limits are not production coder limits.
+Both streams use stateful UTF-8 decoding so split characters remain intact
+before event validation and credential redaction.
 
 Before retaining either artifact or printing diagnostics and metadata, the
 runner redacts the optional `PI_CODER_API_KEY` value, including its JSON-escaped

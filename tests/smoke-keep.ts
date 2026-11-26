@@ -2,6 +2,7 @@
 import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
 
 const EXPECTED_TOOLS = ["keep_run", "keep_capture", "keep_stop", "keep_list"];
@@ -23,6 +24,7 @@ function checkToolEvents(stdout: string, name: string): void {
 		keep_list: "No active keep sessions",
 	};
 	const completed = new Set<string>();
+	let assistantError: string | undefined;
 	for (const line of stdout.split("\n")) {
 		let parsed: unknown;
 		try {
@@ -38,15 +40,15 @@ function checkToolEvents(stdout: string, name: string): void {
 			event.message !== null
 		) {
 			const message = event.message as Record<string, unknown>;
-			if (
-				message.role === "assistant" &&
-				(message.stopReason === "error" || message.stopReason === "aborted")
-			) {
-				throw new Error(
-					"Pi assistant " +
-						message.stopReason +
-						(typeof message.errorMessage === "string" ? ": " + message.errorMessage : ""),
-				);
+			if (message.role === "assistant") {
+				assistantError =
+					message.stopReason === "error" ||
+					message.stopReason === "aborted" ||
+					message.stopReason === "length"
+						? "Pi assistant " +
+							message.stopReason +
+							(typeof message.errorMessage === "string" ? ": " + message.errorMessage : "")
+						: undefined;
 			}
 		}
 		if (
@@ -77,8 +79,9 @@ function checkToolEvents(stdout: string, name: string): void {
 				? text.split(/\r?\n/).includes("keep-smoke-ok")
 				: text === expectedText[event.toolName];
 		if (!valid) throw new Error(event.toolName + " returned an unexpected or failed result");
-		completed.add(event.toolName);
+		if (event.toolName === EXPECTED_TOOLS[completed.size]) completed.add(event.toolName);
 	}
+	if (assistantError) throw new Error(assistantError);
 	for (const tool of EXPECTED_TOOLS) {
 		if (!completed.has(tool)) throw new Error("Missing successful tool event: " + tool);
 		console.log(redactCredential("PASS: " + tool + " completed"));
@@ -150,14 +153,20 @@ async function main(): Promise<number> {
 		() => stop("Pi timed out after " + String(seconds) + "s", 124),
 		seconds * 1000,
 	);
-	child.stdout.on("data", (data: Buffer) => {
-		stdout = (stdout + data.toString("utf8")).slice(0, OUTPUT_LIMIT);
+	const stdoutDecoder = new StringDecoder("utf8");
+	const stderrDecoder = new StringDecoder("utf8");
+	const collectStdout = (text: string): void => {
+		stdout = (stdout + text).slice(0, OUTPUT_LIMIT);
 		if (stdout.length === OUTPUT_LIMIT) stop("Pi stdout exceeded the smoke output limit", 1);
-	});
-	child.stderr.on("data", (data: Buffer) => {
-		stderr = (stderr + data.toString("utf8")).slice(0, OUTPUT_LIMIT);
+	};
+	const collectStderr = (text: string): void => {
+		stderr = (stderr + text).slice(0, OUTPUT_LIMIT);
 		if (stderr.length === OUTPUT_LIMIT) stop("Pi stderr exceeded the smoke output limit", 1);
-	});
+	};
+	child.stdout.on("data", (data: Buffer) => collectStdout(stdoutDecoder.write(data)));
+	child.stdout.on("end", () => collectStdout(stdoutDecoder.end()));
+	child.stderr.on("data", (data: Buffer) => collectStderr(stderrDecoder.write(data)));
+	child.stderr.on("end", () => collectStderr(stderrDecoder.end()));
 	try {
 		const code = await new Promise<number>((resolveExit, reject) => {
 			child.once("error", reject);

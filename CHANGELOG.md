@@ -33,12 +33,16 @@ Changes are grouped under Unreleased until the first tagged release.
 
 ### Changed
 
-- Markdown lint uses repository npm tooling and explicit tracked paths from
+- Markdown lint uses repository npm tooling and literal tracked paths from
   the current Git worktree's index, excluding runtime captures and scratch
   files without skipping a worktree inside an ignored parent directory.
+- Mandatory delegation guidance is enabled only with valid coder configuration.
+  Target resolution and the nested process use Pi's active workspace directory.
 
 ### Fixed
 
+- Guarded Bash preserves Pi's effective shell executable and command prefix,
+  and remaining descendants retain the full deadline TERM-to-KILL grace.
 - The keep smoke bounds the actual Pi process instead of attempting to run
   the shell builtin `wait` through `timeout`. It preserves nonzero Pi exits,
   escalates timeout termination, creates its artifact directory, and cleans
@@ -47,8 +51,14 @@ Changes are grouped under Unreleased until the first tagged release.
   events rather than matching tool names in prompts or narration. Offline
   fake-executable regressions cover the public `make smoke-pi` entry point.
 - Keep smoke artifacts and printed diagnostics redact optional
-  `PI_CODER_API_KEY` values, including JSON-escaped echoes. Assistant error or
-  aborted events fail the smoke even after successful tool results and exit 0.
+  `PI_CODER_API_KEY` values, including JSON-escaped echoes. Stateful UTF-8
+  decoding preserves split Unicode characters before redaction and validation.
+- Keep smoke checks require run, capture, stop, then empty-list order. The final
+  assistant outcome rejects errors, aborts, and truncation while allowing a
+  completed retry to recover from an earlier provider error.
+- Coder results use the final assistant outcome after retries and require a
+  completed `stop` report; errors, aborts, truncation, and incomplete tool-call
+  outcomes cannot become success merely because the process exits zero.
 - Unknown or unsupported Pi CLI options produce guidance to select a
   compatible CLI on `PATH` (tested: 1.6.1), without dropping isolation flags,
   retrying, or changing the original nonzero exit status.
