@@ -257,11 +257,15 @@ async function runPi(cwd: string, env: NodeJS.ProcessEnv, args: string[], state:
 		stop("Pi exceeded 45 second smoke deadline");
 	}, DEADLINE_MS);
 	const interrupt = () => {
+		if (interrupted) {
+			kill("SIGKILL");
+			return;
+		}
 		interrupted = true;
 		stop("Smoke interrupted; terminating owned Pi process group");
 	};
-	process.once("SIGINT", interrupt);
-	process.once("SIGTERM", interrupt);
+	process.on("SIGINT", interrupt);
+	process.on("SIGTERM", interrupt);
 	try {
 		const [code, signal] = (await once(child, "close")) as [number | null, string | null];
 		await writeFile(join(cwd, "parent.jsonl"), stdout);
