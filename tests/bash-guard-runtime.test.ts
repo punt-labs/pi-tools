@@ -20,6 +20,22 @@ afterEach(() => {
 });
 
 describe("registered bash guard runtime", () => {
+	it.each(["fake-runtime-key", undefined])(
+		"strips credential %s through the real SDK tool and preserves the parent",
+		async (credential) => {
+			vi.stubEnv("PI_CODER_API_KEY", credential);
+			vi.stubEnv("GUARD_UNRELATED_TEST", "kept");
+			const result = await tool("3.5").execute("environment", {
+				command:
+					'printf "%s/%s/%s" "${PI_CODER_API_KEY-unset}" "$GUARD_UNRELATED_TEST" "$PI_BASH_TIMEOUT_S"',
+			});
+			expect(result.content).toContainEqual({ type: "text", text: "unset/kept/3.5" });
+			expect(process.env.PI_CODER_API_KEY).toBe(credential);
+			expect(process.env.GUARD_UNRELATED_TEST).toBe("kept");
+			expect(process.env.PI_BASH_TIMEOUT_S).toBe("3.5");
+		},
+	);
+
 	it.each([" >/dev/null 2>&1", ""])(
 		"cleans background descendants on command exit with redirection %s",
 		async (redirection) => {

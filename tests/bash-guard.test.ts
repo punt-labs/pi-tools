@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
 import { DEFAULT_COMMAND_TIMEOUT_S, isTimeoutExit, KILL_GRACE_S } from "../lib/bash-guard.js";
 import { createGuardedBashOperations, MAX_COMMAND_TIMEOUT_S } from "../lib/bash-operations.js";
 
@@ -50,6 +52,34 @@ describe("guard configuration", () => {
 			timeout: 30,
 		});
 		expect(result.exitCode).toBe(124);
+	});
+
+	it("enforces the deadline with only Bash on PATH and no GNU timeout", async () => {
+		const directory = mkdtempSync(join(process.cwd(), ".tmp", "bash-only-"));
+		symlinkSync("/bin/bash", join(directory, "bash"));
+		try {
+			const result = await createGuardedBashOperations(0.1).exec(
+				"while :; do :; done",
+				process.cwd(),
+				{ env: { PATH: directory }, onData: () => undefined },
+			);
+			expect(result.exitCode).toBe(124);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("does not kill another command's process group", async () => {
+		const operations = createGuardedBashOperations();
+		let output = "";
+		const unrelated = operations.exec("sleep 0.2; printf alive", process.cwd(), {
+			onData: (data) => {
+				output += data.toString();
+			},
+		});
+		await operations.exec("exit 0", process.cwd(), { onData: () => undefined });
+		expect((await unrelated).exitCode).toBe(0);
+		expect(output).toBe("alive");
 	});
 
 	it("propagates output callback failures instead of leaking the child", async () => {

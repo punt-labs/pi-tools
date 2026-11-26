@@ -61,7 +61,7 @@ describe("bash guard extension", () => {
 		},
 	);
 
-	it.each([undefined, "", "0", "-1", "invalid", "Infinity"])(
+	it.each([undefined, "", "0", "-1", "invalid", "Infinity", "2147484"])(
 		"uses the 120-second limit for invalid override %s",
 		(override) => {
 			vi.stubEnv("PI_BASH_TIMEOUT_S", override);

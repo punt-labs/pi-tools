@@ -19,8 +19,8 @@
  * uncapped so the agent can read back a truncated command's full output), and
  * 204 GB landed on disk in under an hour.
  *
- * The fix belongs at the spawn boundary, not in a cap on the damage: wrap each
- * command so the kernel kills it whether or not the model asked for a timeout.
+ * lib/bash-operations.ts supervises each command's process group whether or
+ * not the model asks for a timeout, and cleans background jobs on command exit.
  */
 
 /** Default wall-clock ceiling for one command. */
