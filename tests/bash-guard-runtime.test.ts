@@ -1,4 +1,9 @@
-import type { createBashTool, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	createBashTool,
+	createBashToolDefinition,
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,8 +15,17 @@ const fixtures: string[] = [];
 function tool(limit = "120") {
 	vi.stubEnv("PI_BASH_TIMEOUT_S", limit);
 	const registerTool = vi.fn();
-	bashGuardExtension({ registerTool } as unknown as ExtensionAPI);
-	return registerTool.mock.calls[0]?.[0] as ReturnType<typeof createBashTool>;
+	bashGuardExtension({ registerTool, getSettings: () => ({}) } as unknown as ExtensionAPI);
+	const registered = registerTool.mock.calls[0]?.[0] as ReturnType<typeof createBashToolDefinition>;
+	return {
+		...registered,
+		execute(...args: Parameters<ReturnType<typeof createBashTool>["execute"]>) {
+			return registered.execute(args[0], args[1], args[2], args[3], {
+				cwd: process.cwd(),
+				sessionManager: { getSessionId: () => "runtime-fixture", getSessionFile: () => undefined },
+			} as unknown as ExtensionContext);
+		},
+	};
 }
 
 afterEach(() => {
