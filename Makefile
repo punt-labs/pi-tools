@@ -1,5 +1,5 @@
 NPM ?= npm
-MARKDOWNLINT ?= markdownlint-cli2
+MARKDOWNLINT ?= $(NPM) exec markdownlint-cli2 --
 
 .PHONY: help check lint typecheck test test-integration docs check-docs format format-check clean coverage tools smoke-pi
 

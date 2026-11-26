@@ -1,0 +1,92 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createBashTool } from "@earendil-works/pi-coding-agent";
+import type { BashSpawnHook, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import bashGuardExtension from "../extensions/bash-guard.js";
+
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+	createBashTool: vi.fn(() => ({ name: "bash" })),
+}));
+
+const execFileAsync = promisify(execFile);
+
+function registeredHook(): BashSpawnHook {
+	const registerTool = vi.fn();
+	bashGuardExtension({ registerTool } as unknown as ExtensionAPI);
+	expect(registerTool).toHaveBeenCalledWith(vi.mocked(createBashTool).mock.results[0]?.value);
+	const hook = vi.mocked(createBashTool).mock.calls[0]?.[1]?.spawnHook;
+	if (!hook) throw new Error("The registered bash tool has no spawn hook");
+	return hook;
+}
+
+afterEach(() => {
+	vi.clearAllMocks();
+	vi.unstubAllEnvs();
+});
+
+describe("bash guard extension", () => {
+	it.each(["fake-coder-key", undefined])(
+		"keeps credential %s out of a real child without changing the parent",
+		async (credential) => {
+			vi.stubEnv("PI_CODER_API_KEY", credential);
+			vi.stubEnv("PI_BASH_TIMEOUT_S", undefined);
+			const env: NodeJS.ProcessEnv = Object.freeze({
+				PATH: process.env.PATH,
+				UNRELATED_SETTING: "kept",
+				...(credential === undefined ? {} : { PI_CODER_API_KEY: credential }),
+			});
+			const context = {
+				command:
+					'printf "%s\\n" "${PI_CODER_API_KEY-unset}" "$UNRELATED_SETTING" "$PI_BASH_TIMEOUT_S"',
+				cwd: process.cwd(),
+				env,
+			};
+			const guarded = registeredHook()(context);
+			const child = await execFileAsync("bash", ["-c", guarded.command], {
+				cwd: guarded.cwd,
+				env: guarded.env,
+				timeout: 5_000,
+			});
+
+			expect(child.stdout).toBe("unset\nkept\n120\n");
+			expect(child.stderr).toBe("");
+			expect(guarded.env).not.toBe(env);
+			expect(guarded.env).not.toHaveProperty("PI_CODER_API_KEY");
+			expect(env.PI_CODER_API_KEY).toBe(credential);
+			expect(env).not.toHaveProperty("PI_BASH_TIMEOUT_S");
+			expect(process.env.PI_CODER_API_KEY).toBe(credential);
+			expect(process.env.PI_BASH_TIMEOUT_S).toBeUndefined();
+			expect(guarded.cwd).toBe(context.cwd);
+		},
+	);
+
+	it.each([undefined, "", "0", "-1", "invalid", "Infinity"])(
+		"uses the 120-second limit and 10-second grace for invalid override %s",
+		(override) => {
+			vi.stubEnv("PI_BASH_TIMEOUT_S", override);
+			const guarded = registeredHook()({ command: "echo ok", cwd: "/", env: {} });
+			expect(guarded.command).toBe("timeout --kill-after=10s 120s bash -c 'echo ok'");
+			expect(guarded.env.PI_BASH_TIMEOUT_S).toBe("120");
+			expect(process.env.PI_BASH_TIMEOUT_S).toBe(override);
+		},
+	);
+
+	it("propagates the configured timeout to a real child without changing the parent", async () => {
+		vi.stubEnv("PI_BASH_TIMEOUT_S", "3.5");
+		const env = Object.freeze({ PATH: process.env.PATH, PI_BASH_TIMEOUT_S: "99" });
+		const guarded = registeredHook()({
+			command: 'printf "%s" "$PI_BASH_TIMEOUT_S"',
+			cwd: process.cwd(),
+			env,
+		});
+		const child = await execFileAsync("bash", ["-c", guarded.command], {
+			env: guarded.env,
+			timeout: 5_000,
+		});
+		expect(child.stdout).toBe("3.5");
+		expect(guarded.command).toContain("timeout --kill-after=10s 3.5s bash -c");
+		expect(env.PI_BASH_TIMEOUT_S).toBe("99");
+		expect(process.env.PI_BASH_TIMEOUT_S).toBe("3.5");
+	});
+});

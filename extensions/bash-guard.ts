@@ -21,11 +21,17 @@ function timeoutSeconds(): number {
 export default function bashGuardExtension(pi: ExtensionAPI): void {
 	const limit = timeoutSeconds();
 	const bashTool = createBashTool(process.cwd(), {
-		spawnHook: ({ command, cwd, env }) => ({
-			command: withTimeout(command, limit),
-			cwd,
-			env: { ...env, PI_BASH_TIMEOUT_S: String(limit) },
-		}),
+		spawnHook: ({ command, cwd, env }) => {
+			const childEnv: NodeJS.ProcessEnv = { ...env, PI_BASH_TIMEOUT_S: String(limit) };
+			// Shell commands do not need the model credential. This is environment
+			// hygiene on a trusted host, not isolation from same-user access.
+			delete childEnv.PI_CODER_API_KEY;
+			return {
+				command: withTimeout(command, limit),
+				cwd,
+				env: childEnv,
+			};
+		},
 	});
 	pi.registerTool(bashTool);
 }
