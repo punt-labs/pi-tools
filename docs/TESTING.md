@@ -156,6 +156,8 @@ extension:
 - result text must confirm the unique session started and stopped, capture
   the expected output marker, and report an empty keep registry; text-only
   failures cannot pass merely because Pi sets `isError` to false
+- assistant `message_end` events with `stopReason` set to `error` or `aborted`
+  fail the smoke even after all required tools completed and Pi exited zero
 
 Run separately because it requires Pi, tmux, a configured model provider, and
 Node.js with `--experimental-strip-types` support:
@@ -175,6 +177,11 @@ Each run creates `.tmp/keep-smoke-*` artifacts in its working directory and
 uses a unique tmux name. Cleanup targets only that exact session and the owned
 Pi process group. Captured stdout and stderr each have a 1,048,576-character
 test-harness limit. These harness limits are not production coder limits.
+
+Before retaining either artifact or printing diagnostics and metadata, the
+runner redacts the optional `PI_CODER_API_KEY` value, including its JSON-escaped
+form. It does not claim to filter every credential. Raw events remain available
+in memory for tool-result validation, and nonzero Pi exits retain their status.
 
 Successful tool events alone do not prove every resulting process state.
 Inspect the actual smoke output when evaluating its result. This target does
