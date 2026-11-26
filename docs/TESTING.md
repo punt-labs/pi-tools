@@ -12,7 +12,8 @@ checks are separate integration tiers with different prerequisites.
   tool registration, provider configuration, shell environments, and reporting.
   These are integration checks without a live provider or relay.
 - Local process tests: execute guarded shell commands, including termination
-  of a runaway command. Require bash and GNU `timeout`, but no network.
+  of a runaway command. Require Node.js 24, Bash, and POSIX process groups,
+  but no network or GNU `timeout`.
 - TS typecheck: all extensions and lib code compile cleanly.
   Automated.
 - Markdown lint: all docs pass markdownlint. Automated.
@@ -25,7 +26,7 @@ checks are separate integration tiers with different prerequisites.
   and execution; a worker's successful report is not sufficient.
 - Real-Pi coder loopback smoke: installed parent and nested Pi processes use
   a deterministic local fake provider, actual file writes, and real guarded
-  shell checks. Requires Pi, Node.js, bash, GNU `timeout`, and Linux process
+  shell checks. Requires Pi, Node.js 24, Bash, and Linux process
   inspection. Uses fake credentials, not a paid model or real provider key.
 
 ## Unit tests
@@ -57,15 +58,22 @@ Helper tests live in `tests/` and cover logic in `lib/`:
 - `pi-coder.test.ts` — self-contained prompts, target paths, provider/model
   selection, child arguments, JSON report/usage parsing, and tool-enabled
   implementation instructions
-- `bash-guard.test.ts` — timeout wrapping, quoting, validation, exit statuses,
-  real command completion, and runaway-command termination
-- `markdownlint.test.ts` — repository Markdown remains linted while gitignored
-  runtime captures, scratch files, and the deposited tracker guide are excluded
+- `bash-guard.test.ts` — deadline configuration, validation, exit statuses,
+  missing Bash diagnostics, execution without GNU `timeout`, runaway-command
+  termination, cancellation, and independence of separate command groups
+- `bash-guard-runtime.test.ts` — real process-group supervision, background-job
+  cleanup when commands exit, TERM/KILL escalation, and cancellation
+- `markdownlint.test.ts` — tracked-path selection includes ignored-parent
+  worktrees while runtime captures, scratch files, and the deposited tracker
+  guide remain excluded
+- `smoke-pi.test.ts` — fake Pi/tmux executables exercise the keep smoke entry
+  point, JSON event validation, exit preservation, timeout escalation, unique
+  session ownership, and artifact creation without live credentials or models
 
 The pure helper cases verify input/output behavior without external services.
 Some cases use controlled mocks or local subprocesses. In particular, the bash
-guard's execution tests require bash and GNU `timeout`. Offline does not mean
-no local executable dependencies.
+guard's execution tests require Bash and POSIX process groups. Offline does
+not mean no local executable dependencies.
 
 ## Offline extension integration tests
 
@@ -98,11 +106,16 @@ without errors.
 
 ## Markdown lint
 
-Repository-owned Markdown must pass markdownlint. Dependency directories,
-gitignored runtime captures and scratch files, and the deposited tracker guide
-under `.punt-labs/punt/` are not repository-authored documentation. Audit the
-tracked inventory with `git ls-files '*.md'`; do not treat captured runtime
-documents or dependency documentation as this repository's writing.
+`lib/lint-docs.ts` selects explicit tracked Markdown paths from the current Git
+worktree's index, then passes them to markdownlint. This works even when the
+worktree is inside an ignored parent directory. Stage new Markdown files before
+running this gate so they are included.
+
+Dependency documentation, untracked runtime captures and scratch files, and
+the deposited tracker guide under `.punt-labs/punt/` are not repository-authored
+documentation. The deposited guide remains excluded by the lint configuration.
+Audit the tracked inventory with `git ls-files '*.md'`; do not treat captured
+session logs as this repository's writing.
 
 ## Biff real-relay integration
 
@@ -130,23 +143,44 @@ offline and deterministic.
 
 ## Pi smoke test
 
-The `smoke-pi` target runs `tests/smoke-pi.sh` against a live Pi process in
-JSON print mode. Its scope is the keep tools, not every extension:
+The `smoke-pi` target runs `tests/smoke-pi.sh`, which delegates process handling
+and event validation to the test-only `tests/smoke-keep.ts` runner. It uses a
+live Pi process in JSON print mode. Its scope is the keep tools, not every
+extension:
 
 - pi starts with the keep extension loaded
 - agent is prompted to use keep tools
-- output is checked for tool call evidence
+- output must contain successful `tool_execution_end` events for `keep_run`,
+  `keep_capture`, `keep_stop`, and `keep_list`; tool names in prompts or
+  narration do not count, and failed tool events fail the smoke
+- result text must confirm the unique session started and stopped, capture
+  the expected output marker, and report an empty keep registry; text-only
+  failures cannot pass merely because Pi sets `isError` to false
 
-Run separately because it requires Pi, tmux, and a configured model provider:
+Run separately because it requires Pi, tmux, a configured model provider, and
+Node.js with `--experimental-strip-types` support:
 
 - `make smoke-pi`
 
 Not included in `make check`.
 
-Tool-call evidence alone does not prove the resulting process state. Inspect
-the actual smoke output and cleanup when evaluating its result. This target
-does not establish coder delegation, credential filtering, or independent
-parent verification.
+The runner bounds actual Pi execution to 30 seconds by default. Set the
+test-only `PI_KEEP_SMOKE_TIMEOUT_S` to a positive finite number to change it.
+Timeout sends TERM to the owned process group, followed by KILL after one
+second if needed, and returns exit 124. Nonzero Pi exits retain their exit code
+when invoking the script directly; `make` reports its own failure status.
+The runner requires no external `timeout` executable.
+
+Each run creates `.tmp/keep-smoke-*` artifacts in its working directory and
+uses a unique tmux name. Cleanup targets only that exact session and the owned
+Pi process group. Captured stdout and stderr each have a 1,048,576-character
+test-harness limit. These harness limits are not production coder limits.
+
+Successful tool events alone do not prove every resulting process state.
+Inspect the actual smoke output when evaluating its result. This target does
+not establish coder delegation, credential filtering, or independent parent
+verification. Its offline regression suite uses fake executables and never
+contacts the real model provider or host tmux.
 
 ## Real-Pi coder loopback smoke
 
@@ -154,6 +188,12 @@ parent verification.
 runs the installed Pi CLI as both parent and nested coder. Scripted responses
 exercise real extension loading and tool execution without asking a live
 model to generate code.
+
+Run the dedicated target separately from `make check`:
+
+```bash
+make smoke-coder
+```
 
 The scenarios cover:
 
@@ -167,8 +207,9 @@ The scenarios cover:
 
 Artifacts are retained in `.tmp/smoke-coder-*`, including per-scenario Pi event
 logs and requests. The harness bounds its own subprocess runtime and captured
-output; those test-harness limits do not add a production worker deadline or
-hard output cap to `pi_coder`.
+output. These test-harness limits are separate from `pi_coder`'s 8 MiB combined
+nested-Pi transcript cap. Neither limit creates a production worker deadline
+or a volume cap on shell-command output files and disk spill.
 
 The current process-argument checks use Linux `/proc`. This smoke therefore
 requires Linux; it does not establish macOS execution. It also does not verify
