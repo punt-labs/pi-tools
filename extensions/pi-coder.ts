@@ -262,6 +262,11 @@ export default function piCoderExtension(pi: ExtensionAPI): void {
 						"pi_coder FAILED: no final assistant report; awaiting boss verification.",
 					);
 				}
+				if (coderOutput.stopReason !== "stop") {
+					return failCoder(
+						"pi_coder FAILED: final assistant did not complete; awaiting boss verification.",
+					);
+				}
 				const written = await readIfPresent(target);
 				if (written === null) {
 					return failCoder(

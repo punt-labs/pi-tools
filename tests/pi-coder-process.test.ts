@@ -69,7 +69,7 @@ describe("pi_coder real subprocess boundary", () => {
 const fs = require('node:fs');
 if (process.cwd() !== require('node:path').join(__dirname, 'sdk-workspace')) { console.error('wrong execution directory'); process.exit(1); }
 fs.writeFileSync('context-target.ts', JSON.stringify({ cwd: process.cwd(), prompt: process.argv.at(-1) }));
-console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'self-tested in execution directory' }] } }));
+console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'self-tested in execution directory' }] } }));
 `);
 		const cwd = join(fixture ?? "", "sdk-workspace");
 		await mkdir(cwd);
@@ -92,7 +92,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const target = path.join(__dirname, 'target.ts');
 fs.writeFileSync(target, JSON.stringify({ inherited: process.env.PI_CODER_API_KEY === 'fake-process-key', args: process.argv.slice(2) }));
-console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'worker self-test claim' }], usage: { input: 4, output: 2 } } }));
+console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'worker self-test claim' }], usage: { input: 4, output: 2 } } }));
 `);
 		const target = join(fixture ?? "", "target.ts");
 		const result = await tool.execute("1", { task: "write the target", target_path: target });

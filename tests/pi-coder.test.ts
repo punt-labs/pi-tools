@@ -144,6 +144,74 @@ describe("normalizeCoderOutput", () => {
 });
 
 describe("parseCoderOutput", () => {
+	it("uses a recovered final assistant outcome and keeps usage from earlier attempts", () => {
+		const stream = [
+			{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "temporary provider failure",
+					content: [],
+					usage: { input: 3, output: 1 },
+				},
+			},
+			{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "compiled and self-tested" }],
+					usage: { input: 5, output: 2 },
+				},
+			},
+			{
+				type: "message_end",
+				message: {
+					role: "toolResult",
+					stopReason: "error",
+					content: [{ type: "text", text: "not the final report" }],
+					usage: { input: 100 },
+				},
+			},
+		]
+			.map((event) => JSON.stringify(event))
+			.join("\n");
+		expect(parseCoderOutput(stream)).toMatchObject({
+			report: "compiled and self-tested\n",
+			stopReason: "stop",
+			inputTokens: 8,
+			outputTokens: 3,
+		});
+		expect(parseCoderOutput(stream).error).toBeUndefined();
+	});
+
+	it.each(["error", "aborted", "length"])(
+		"treats final assistant %s as failure despite a preceding complete report",
+		(stopReason) => {
+			const stream = [
+				{
+					type: "message_end",
+					message: {
+						role: "assistant",
+						stopReason: "stop",
+						content: [{ type: "text", text: "earlier report" }],
+					},
+				},
+				{
+					type: "message_end",
+					message: {
+						role: "assistant",
+						stopReason,
+						content: [{ type: "text", text: "incomplete final text" }],
+					},
+				},
+			]
+				.map((event) => JSON.stringify(event))
+				.join("\n");
+			expect(parseCoderOutput(stream).error).toContain(stopReason);
+		},
+	);
 	it("ignores user and tool text and usage after an assistant report", () => {
 		const stream = [
 			{

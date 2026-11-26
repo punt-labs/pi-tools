@@ -69,7 +69,7 @@ function fakeChild(stdout: string, code: number | null = 0, stderr = "") {
 function assistant(text = "self-tests passed", extra = {}): string {
 	return JSON.stringify({
 		type: "message_end",
-		message: { role: "assistant", content: [{ type: "text", text }], ...extra },
+		message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text }], ...extra },
 	});
 }
 
@@ -84,6 +84,26 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("pi_coder execution contract", () => {
+	it("accepts a complete final report after Pi recovers a provider error", async () => {
+		fakeChild(
+			assistant("", { stopReason: "error", errorMessage: "temporary failure" }) +
+				"\n" +
+				assistant("recovered self-test report", { stopReason: "stop" }),
+		);
+		const result = await registeredTool().execute("1", { task: "write", target_path: "out.ts" });
+		expect(result.content[0].text).toContain("recovered self-test report");
+		expect(result.content[0].text).toContain("awaiting boss verification");
+	});
+
+	it.each(["error", "aborted", "length", "toolUse", undefined])(
+		"rejects an incomplete final assistant outcome %s even with report text and a target file",
+		async (stopReason) => {
+			fakeChild(assistant("partial report", { stopReason }));
+			await expect(
+				registeredTool().execute("1", { task: "write", target_path: "out.ts" }),
+			).rejects.toThrow();
+		},
+	);
 	it.each([
 		{ provider: "", model: "", thinking: "" },
 		{ provider: "test-provider", model: "", thinking: "" },

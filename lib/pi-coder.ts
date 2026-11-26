@@ -103,6 +103,7 @@ export interface CoderOutput {
 	outputTokens: number;
 	reasoningTokens: number;
 	error?: string;
+	stopReason?: string;
 }
 
 /** Extract usage and the final assistant report from pi's JSON event stream. */
@@ -113,6 +114,7 @@ export function parseCoderOutput(stdout: string): CoderOutput {
 	let report = "";
 	let sawJson = false;
 	let error: string | undefined;
+	let stopReason: string | undefined;
 
 	for (const line of stdout.split("\n")) {
 		if (!line.trim()) continue;
@@ -130,11 +132,14 @@ export function parseCoderOutput(stdout: string): CoderOutput {
 		if (typeof message !== "object" || message === null) continue;
 		const messageRecord = message as Record<string, unknown>;
 		if (messageRecord.role !== undefined && messageRecord.role !== "assistant") continue;
-		if (messageRecord.stopReason === "error" || messageRecord.stopReason === "aborted") {
+		stopReason =
+			typeof messageRecord.stopReason === "string" ? messageRecord.stopReason : undefined;
+		error = undefined;
+		if (stopReason === "error" || stopReason === "aborted" || stopReason === "length") {
 			error =
 				typeof messageRecord.errorMessage === "string" && messageRecord.errorMessage
 					? messageRecord.errorMessage
-					: "Coder assistant stopped: " + messageRecord.stopReason;
+					: "Coder assistant stopped: " + stopReason;
 		}
 		const usage = messageRecord.usage;
 		if (typeof usage === "object" && usage !== null) {
@@ -160,6 +165,7 @@ export function parseCoderOutput(stdout: string): CoderOutput {
 		outputTokens,
 		reasoningTokens,
 		...(error ? { error } : {}),
+		...(stopReason ? { stopReason } : {}),
 	};
 }
 
