@@ -115,11 +115,26 @@ PR, Biff, and Vox examples.
 Connect Pi to Biff through a process-owned, durable Biff REPL. Every Pi process
 uses a distinct tmux session and Biff TTY, preventing concurrent Pi sessions
 from consuming one another's messages. The extension polls for unread mail,
-raises Pi notifications, and displays connection or unread state in the
-footer.
+raises Pi notifications, and shows the same status as Biff's Claude Code
+statusline in the footer: `user:tty(N)` with the unread count (highlighted when
+nonzero, `(n)` when messages are off), then the team wall when one is posted.
 
 Install and authenticate Biff before enabling this extension. See the
 [Biff installation instructions](https://github.com/punt-labs/biff#quick-start).
+
+Biff reads its relay and team settings from `.punt-labs/biff/config.yaml` and
+`config.local.yaml` at the root of the git repository it starts in, and
+silently falls back to a public demo relay when it finds neither. The bridge
+therefore starts Biff in the nearest enclosing repository that has a Biff
+config, so a repository nested inside a configured workspace repository uses
+the workspace's relay. A configured directory that is not itself a git
+repository is skipped, because Biff cannot start there. If no directory has
+one, the bridge warns that Biff is on the demo relay. `BIFF_CWD` overrides
+the search with a fixed directory:
+
+```bash
+export BIFF_CWD=~/Coding/punt-labs
+```
 
 | Tools | Purpose |
 | --- | --- |
@@ -134,6 +149,11 @@ Install and authenticate Biff before enabling this extension. See the
 | `biff_talk_read` | Read new talk activity |
 | `biff_talk_send` | Send a talk line |
 | `biff_talk_end` | Cancel or end a talk |
+
+Each Pi process owns its own Biff session, named `pi-<pid>`: the bridge
+creates it at startup and ends it at shutdown, so stale sessions don't pile up
+in `biff who`. Message, plan and wall text may contain quotes, apostrophes and
+line breaks; line breaks are sent as ` / ` because Biff messages are one line.
 
 The four talk tools adapt Biff's modal BSD-style `talk` interface to discrete
 Pi tool calls. The bridge can initiate or accept an invitation, exchange lines,
