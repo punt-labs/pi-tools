@@ -28,6 +28,41 @@ const names = ["keep_run", "keep_capture", "keep_stop", "keep_list"];
 const args = process.argv.slice(2);
 const name = /named ([A-Za-z0-9_-]+)/.exec(args[args.indexOf("-p") + 1])[1];
 const scenario = process.env.SCENARIO;
+function eventFor(tool, text) {
+  return {type:"tool_execution_end",toolName:tool,isError:false,result:{content:[{type:"text",text}]}};
+}
+if (scenario === "unicode-success" || scenario === "unicode-credential") {
+  async function splitUtf8(stream, text) {
+    const bytes = Buffer.from(text);
+    let start = 0;
+    for (let index = 0; index < bytes.length; index++) {
+      if (bytes[index] >= 0xc0) {
+        stream.write(bytes.subarray(start, index + 1));
+        start = index + 1;
+        await new Promise(done => setTimeout(done, 15));
+      }
+    }
+    stream.write(bytes.subarray(start));
+  }
+  const events = scenario === "unicode-success" ? [
+    eventFor("keep_run", "Started: " + name),
+    eventFor("keep_capture", "keep-smoke-ok\\n雪🙂"),
+    eventFor("keep_stop", "Stopped: " + name),
+    eventFor("keep_list", "No active keep sessions"),
+  ] : [{type:"provider_error",message:process.env.PI_CODER_API_KEY + " 雪🙂"}];
+  void (async () => {
+    await splitUtf8(process.stdout, events.map(event => JSON.stringify(event)).join("\\n") + "\\n");
+    await splitUtf8(process.stderr, "diagnostic 雪🙂 " + (process.env.PI_CODER_API_KEY || "") + "\\n");
+    process.exit(scenario === "unicode-success" ? 0 : 7);
+  })();
+  return;
+}
+if (scenario === "early-list" || scenario === "early-list-then-final") {
+  console.log(JSON.stringify(eventFor("keep_list", "No active keep sessions")));
+}
+if (scenario === "assistant-recovered") {
+  console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"error",errorMessage:"recoverable fake provider failure"}}));
+}
 if (scenario === "unknown-option" || scenario === "unsupported-option") {
   console.error("error: " + scenario.replace("-", " ") + " '--no-mcp'");
   process.exit(2);
@@ -44,15 +79,18 @@ if (scenario === "timeout") {
   console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:names.join(" ")}]}}));
   if (scenario !== "narration") {
     for (const name of names) {
-      if (scenario === "missing-call" && name === "keep_list") continue;
+      if ((scenario === "missing-call" || scenario === "early-list") && name === "keep_list") continue;
       const session = /named ([A-Za-z0-9_-]+)/.exec(args[args.indexOf("-p") + 1])[1];
       let text = name === "keep_run" ? "Started: " + session : name === "keep_stop" ? "Stopped: " + session : name === "keep_list" ? "No active keep sessions" : "keep-smoke-ok";
       if (scenario === "text-error" && name === process.env.ERROR_TOOL) text = "Failed to perform keep operation";
       console.log(JSON.stringify({type:"tool_execution_end",toolName:name,isError:scenario === "tool-error" && name === "keep_capture",result:{content:[{type:"text",text}]}}));
     }
   }
-  if (scenario === "assistant-error" || scenario === "assistant-aborted") {
+  if (scenario === "assistant-error" || scenario === "assistant-aborted" || scenario === "assistant-length") {
     console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:scenario.slice("assistant-".length),errorMessage:"Fake provider failed after tools " + process.env.PI_CODER_API_KEY,content:[]}}));
+  }
+  if (scenario === "assistant-recovered") {
+    console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:"Recovered; all tool checks completed"}]}}));
   }
   process.exit(scenario === "pi-failure" ? 7 : 0);
 }
@@ -94,6 +132,60 @@ async function smoke(scenario: string, extraEnv: NodeJS.ProcessEnv = {}) {
 }
 
 describe("keep smoke entry point", () => {
+	it("preserves split UTF-8 in actual tool events and both retained streams", async () => {
+		const result = await smoke("unicode-success", { PI_KEEP_SMOKE_TIMEOUT_S: "3" });
+		expect(result.code, result.stdout + result.stderr).toBe(0);
+		const artifacts = /^Artifacts: (.+)$/m.exec(result.stdout)?.[1];
+		if (!artifacts) throw new Error("missing artifacts");
+		for (const file of ["pi.jsonl", "pi.stderr"]) {
+			const text = await readFile(join(artifacts, file), "utf8");
+			expect(text).toContain("雪🙂");
+			expect(text).not.toContain("\ufffd");
+		}
+	});
+
+	it("redacts a non-ASCII fake credential split across pipe chunks", async () => {
+		const key = "fake-é-密-🔑-credential";
+		const result = await smoke("unicode-credential", {
+			PI_CODER_API_KEY: key,
+			PI_KEEP_SMOKE_TIMEOUT_S: "3",
+		});
+		expect(result.code).toBe(7);
+		const artifacts = /^Artifacts: (.+)$/m.exec(result.stdout)?.[1];
+		if (!artifacts) throw new Error("missing artifacts");
+		for (const file of ["pi.jsonl", "pi.stderr"]) {
+			const text = await readFile(join(artifacts, file), "utf8");
+			expect(text).toContain("[REDACTED]");
+			expect(text).not.toContain("fake-");
+			expect(text).toContain("雪🙂");
+			expect(text).not.toContain("\ufffd");
+		}
+	});
+
+	it("does not count an empty registry check before run as a post-stop check", async () => {
+		const result = await smoke("early-list");
+		expect(result.code, result.stdout + result.stderr).toBe(1);
+		expect(result.stdout).not.toContain("All smoke tests passed");
+	});
+
+	it("allows early registry inspection when a later empty check follows stop", async () => {
+		const result = await smoke("early-list-then-final");
+		expect(result.code, result.stdout + result.stderr).toBe(0);
+	});
+
+	it("accepts a completed assistant retry after an earlier recoverable failure", async () => {
+		const result = await smoke("assistant-recovered");
+		expect(result.code, result.stdout + result.stderr).toBe(0);
+		expect(result.stdout).toContain("All smoke tests passed");
+	});
+
+	it("rejects terminal assistant length truncation after successful tools", async () => {
+		const result = await smoke("assistant-length");
+		expect(result.code, result.stdout + result.stderr).toBe(1);
+		expect(result.stdout).not.toContain("All smoke tests passed");
+		expect(result.stdout + result.stderr).toContain("length");
+	});
+
 	it.each(["unknown-option", "unsupported-option"])(
 		"explains compatible Pi CLI requirements on %s without retrying or dropping flags",
 		async (scenario) => {

@@ -156,8 +156,11 @@ extension:
 - result text must confirm the unique session started and stopped, capture
   the expected output marker, and report an empty keep registry; text-only
   failures cannot pass merely because Pi sets `isError` to false
-- assistant `message_end` events with `stopReason` set to `error` or `aborted`
-  fail the smoke even after all required tools completed and Pi exited zero
+- those successful events must occur in run, capture, stop, empty-list order;
+  an earlier registry inspection cannot replace the post-stop check
+- the final assistant `message_end` outcome must not be `error`, `aborted`, or
+  `length`, even after successful tools and exit zero; a later completed
+  assistant retry can recover from an earlier provider error
 
 Run separately because it requires Pi, tmux, a configured model provider, and
 Node.js with `--experimental-strip-types` support:
@@ -177,6 +180,12 @@ Each run creates `.tmp/keep-smoke-*` artifacts in its working directory and
 uses a unique tmux name. Cleanup targets only that exact session and the owned
 Pi process group. Captured stdout and stderr each have a 1,048,576-character
 test-harness limit. These harness limits are not production coder limits.
+Both streams use stateful UTF-8 decoding so split characters remain intact
+before event validation and credential redaction.
+
+Per-run diagnostic directories are intentionally retained for inspection.
+`make clean` preserves them; it removes build output and the legacy smoke file,
+not `.tmp/keep-smoke-*` or `.tmp/smoke-coder-*` diagnostics.
 
 Before retaining either artifact or printing diagnostics and metadata, the
 runner redacts the optional `PI_CODER_API_KEY` value, including its JSON-escaped
