@@ -7,6 +7,15 @@ import { promisify } from "node:util";
 const EXPECTED_TOOLS = ["keep_run", "keep_capture", "keep_stop", "keep_list"];
 const OUTPUT_LIMIT = 1024 * 1024;
 
+function redactCredential(text: string): string {
+	const credential = process.env.PI_CODER_API_KEY;
+	if (!credential) return text;
+	// JSON output can escape quotes and backslashes in an echoed credential.
+	return text
+		.replaceAll(JSON.stringify(credential).slice(1, -1), "[REDACTED]")
+		.replaceAll(credential, "[REDACTED]");
+}
+
 function checkToolEvents(stdout: string, name: string): void {
 	const expectedText: Record<string, string> = {
 		keep_run: "Started: " + name,
@@ -23,6 +32,23 @@ function checkToolEvents(stdout: string, name: string): void {
 		}
 		if (typeof parsed !== "object" || parsed === null) continue;
 		const event = parsed as Record<string, unknown>;
+		if (
+			event.type === "message_end" &&
+			typeof event.message === "object" &&
+			event.message !== null
+		) {
+			const message = event.message as Record<string, unknown>;
+			if (
+				message.role === "assistant" &&
+				(message.stopReason === "error" || message.stopReason === "aborted")
+			) {
+				throw new Error(
+					"Pi assistant " +
+						message.stopReason +
+						(typeof message.errorMessage === "string" ? ": " + message.errorMessage : ""),
+				);
+			}
+		}
 		if (
 			event.type !== "tool_execution_end" ||
 			typeof event.toolName !== "string" ||
@@ -55,7 +81,7 @@ function checkToolEvents(stdout: string, name: string): void {
 	}
 	for (const tool of EXPECTED_TOOLS) {
 		if (!completed.has(tool)) throw new Error("Missing successful tool event: " + tool);
-		console.log("PASS: " + tool + " completed");
+		console.log(redactCredential("PASS: " + tool + " completed"));
 	}
 }
 
@@ -73,8 +99,8 @@ async function main(): Promise<number> {
 	const name =
 		"smoke-" + String(process.pid) + "-" + basename(artifacts).slice("keep-smoke-".length);
 	const extension = resolve(import.meta.dirname, "..", "extensions", "keep.ts");
-	console.log("Starting Pi in JSON print mode...");
-	console.log("Artifacts: " + artifacts);
+	console.log(redactCredential("Starting Pi in JSON print mode..."));
+	console.log(redactCredential("Artifacts: " + artifacts));
 	const child = spawn(
 		"pi",
 		[
@@ -137,18 +163,30 @@ async function main(): Promise<number> {
 			child.once("error", reject);
 			child.once("close", (exitCode) => resolveExit(exitCode ?? 1));
 		});
-		await writeFile(join(artifacts, "pi.jsonl"), stdout);
-		await writeFile(join(artifacts, "pi.stderr"), stderr);
+		await writeFile(join(artifacts, "pi.jsonl"), redactCredential(stdout));
+		await writeFile(join(artifacts, "pi.stderr"), redactCredential(stderr));
 		if (failure) {
-			console.error("FAIL: " + failure);
+			console.error(redactCredential("FAIL: " + failure));
 			return failureCode;
 		}
 		if (code !== 0) {
-			console.error("FAIL: Pi exited with exit " + String(code));
+			console.error(redactCredential("FAIL: Pi exited with exit " + String(code)));
+			if (
+				/\b(?:unknown|unsupported|unrecognized)\s+(?:command[- ]line\s+)?(?:option|argument)\b/i.test(
+					stderr + "\n" + stdout,
+				)
+			) {
+				console.error(
+					redactCredential(
+						"Use a compatible Pi CLI (tested: 1.6.1). Ensure the intended pi executable is first on PATH; " +
+							"the required isolation flags, including --no-mcp, are not removed or retried.",
+					),
+				);
+			}
 			return code;
 		}
 		checkToolEvents(stdout, name);
-		console.log("All smoke tests passed.");
+		console.log(redactCredential("All smoke tests passed."));
 		return 0;
 	} finally {
 		clearTimeout(deadline);
@@ -168,6 +206,8 @@ main()
 		process.exitCode = code;
 	})
 	.catch((error: unknown) => {
-		console.error("FAIL: " + (error instanceof Error ? error.message : String(error)));
+		console.error(
+			redactCredential("FAIL: " + (error instanceof Error ? error.message : String(error))),
+		);
 		process.exitCode = 1;
 	});

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { copyFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -21,12 +21,22 @@ beforeEach(async () => {
 		join(bin, "pi"),
 		`#!${process.execPath}
 const fs = require("node:fs");
+fs.appendFileSync(process.env.FIXTURE + "/pi.invocations", "pi\\n");
 fs.writeFileSync(process.env.FIXTURE + "/pi.pid", String(process.pid));
 fs.writeFileSync(process.env.FIXTURE + "/pi.args", JSON.stringify(process.argv.slice(2)));
 const names = ["keep_run", "keep_capture", "keep_stop", "keep_list"];
 const args = process.argv.slice(2);
 const name = /named ([A-Za-z0-9_-]+)/.exec(args[args.indexOf("-p") + 1])[1];
 const scenario = process.env.SCENARIO;
+if (scenario === "unknown-option" || scenario === "unsupported-option") {
+  console.error("error: " + scenario.replace("-", " ") + " '--no-mcp'");
+  process.exit(2);
+}
+if (scenario === "credential-echo") {
+  console.log(JSON.stringify({type:"provider_error",message:"Fake provider echoed " + process.env.PI_CODER_API_KEY}));
+  console.error("Fake provider echoed " + process.env.PI_CODER_API_KEY);
+  process.exit(7);
+}
 if (scenario === "timeout") {
   process.on("SIGTERM", () => {});
   setInterval(() => {}, 1000);
@@ -40,6 +50,9 @@ if (scenario === "timeout") {
       if (scenario === "text-error" && name === process.env.ERROR_TOOL) text = "Failed to perform keep operation";
       console.log(JSON.stringify({type:"tool_execution_end",toolName:name,isError:scenario === "tool-error" && name === "keep_capture",result:{content:[{type:"text",text}]}}));
     }
+  }
+  if (scenario === "assistant-error" || scenario === "assistant-aborted") {
+    console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:scenario.slice("assistant-".length),errorMessage:"Fake provider failed after tools " + process.env.PI_CODER_API_KEY,content:[]}}));
   }
   process.exit(scenario === "pi-failure" ? 7 : 0);
 }
@@ -81,6 +94,59 @@ async function smoke(scenario: string, extraEnv: NodeJS.ProcessEnv = {}) {
 }
 
 describe("keep smoke entry point", () => {
+	it.each(["unknown-option", "unsupported-option"])(
+		"explains compatible Pi CLI requirements on %s without retrying or dropping flags",
+		async (scenario) => {
+			const result = await smoke(scenario);
+			expect(result.code).toBe(2);
+			expect(result.stdout + result.stderr).toContain("1.6.1");
+			expect(result.stdout + result.stderr).toContain("PATH");
+			expect(result.stdout + result.stderr).toMatch(/compatible Pi CLI/i);
+			expect(await readFile(join(fixture, "pi.invocations"), "utf8")).toBe("pi\n");
+			const args = JSON.parse(await readFile(join(fixture, "pi.args"), "utf8")) as string[];
+			expect(args).toContain("--no-mcp");
+			expect(args).toContain("--no-extensions");
+		},
+	);
+
+	it.each(["error", "aborted"])(
+		"rejects assistant %s after successful tool events without exposing a fake key",
+		async (reason) => {
+			const key = "fake-assistant-failure-key-not-a-credential";
+			const result = await smoke("assistant-" + reason, { PI_CODER_API_KEY: key });
+			expect(result.code, result.stdout + result.stderr).toBe(1);
+			expect(result.stdout).not.toContain("All smoke tests passed");
+			expect(result.stdout + result.stderr).toContain(reason);
+			expect(result.stdout + result.stderr).not.toContain(key);
+		},
+	);
+
+	it.each(["plain", "escaped", "metadata"])(
+		"redacts the optional fake credential from both artifacts and console output (%s)",
+		async (variant) => {
+			const key =
+				variant === "metadata"
+					? basename(fixture)
+					: variant === "escaped"
+						? 'fake-"quoted\\key-only'
+						: "fake-keep-smoke-key-not-a-credential";
+			const result = await smoke("credential-echo", { PI_CODER_API_KEY: key });
+			expect(result.code).toBe(7);
+			const directories = await readdir(join(fixture, ".tmp"));
+			const artifactName = directories.find((entry) => entry.startsWith("keep-smoke-"));
+			if (!artifactName) throw new Error("missing artifact directory");
+			const artifacts = join(fixture, ".tmp", artifactName);
+			for (const file of ["pi.jsonl", "pi.stderr"]) {
+				const captured = await readFile(join(artifacts, file), "utf8");
+				expect(captured, file).not.toContain(key);
+				expect(captured, file).not.toContain(JSON.stringify(key).slice(1, -1));
+				expect(captured, file).toContain("[REDACTED]");
+			}
+			expect(result.stdout + result.stderr).not.toContain(key);
+			expect(result.stdout + result.stderr).toContain("exit 7");
+		},
+	);
+
 	it("accepts completed tool events, creates artifacts, and cleans only its unique session", async () => {
 		const first = await smoke("success");
 		expect(first.code, first.stdout + first.stderr).toBe(0);

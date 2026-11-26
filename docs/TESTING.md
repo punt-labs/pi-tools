@@ -26,8 +26,8 @@ checks are separate integration tiers with different prerequisites.
   and execution; a worker's successful report is not sufficient.
 - Real-Pi coder loopback smoke: installed parent and nested Pi processes use
   a deterministic local fake provider, actual file writes, and real guarded
-  shell checks. Requires Pi, Node.js 24, Bash, and Linux process
-  inspection. Uses fake credentials, not a paid model or real provider key.
+  shell checks. Requires a compatible Pi CLI, Node.js 24, Bash, and POSIX process
+  groups. Uses fake credentials, not a paid model or real provider key.
 
 ## Unit tests
 
@@ -156,6 +156,8 @@ extension:
 - result text must confirm the unique session started and stopped, capture
   the expected output marker, and report an empty keep registry; text-only
   failures cannot pass merely because Pi sets `isError` to false
+- assistant `message_end` events with `stopReason` set to `error` or `aborted`
+  fail the smoke even after all required tools completed and Pi exited zero
 
 Run separately because it requires Pi, tmux, a configured model provider, and
 Node.js with `--experimental-strip-types` support:
@@ -175,6 +177,11 @@ Each run creates `.tmp/keep-smoke-*` artifacts in its working directory and
 uses a unique tmux name. Cleanup targets only that exact session and the owned
 Pi process group. Captured stdout and stderr each have a 1,048,576-character
 test-harness limit. These harness limits are not production coder limits.
+
+Before retaining either artifact or printing diagnostics and metadata, the
+runner redacts the optional `PI_CODER_API_KEY` value, including its JSON-escaped
+form. It does not claim to filter every credential. Raw events remain available
+in memory for tool-result validation, and nonzero Pi exits retain their status.
 
 Successful tool events alone do not prove every resulting process state.
 Inspect the actual smoke output when evaluating its result. This target does
@@ -211,11 +218,14 @@ output. These test-harness limits are separate from `pi_coder`'s 8 MiB combined
 nested-Pi transcript cap. Neither limit creates a production worker deadline
 or a volume cap on shell-command output files and disk spill.
 
-The current process-argument checks use Linux `/proc`. This smoke therefore
-requires Linux; it does not establish macOS execution. It also does not verify
-real-model coding quality, model compliance, provider compatibility beyond
-the fixture, or the full compile/test/integration contract for a real task.
-Those remain separate live validation and parent acceptance requirements.
+Process-argument checks preload `argv-probe.cjs` through `NODE_OPTIONS` and read
+the resulting `node-startup.jsonl`. This records startup arguments before Pi
+changes its process title; the checks do not read Linux `/proc`.
+Execution has been verified on Linux; macOS execution remains unverified.
+The fixture does not verify real-model coding quality, model compliance,
+provider compatibility beyond its scripted responses, or the full
+compile/test/integration contract for a real task. Those remain separate live
+validation and parent acceptance requirements.
 
 ## Live coder validation
 

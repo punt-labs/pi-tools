@@ -46,6 +46,12 @@ Changes are grouped under Unreleased until the first tagged release.
 - Keep smoke validation requires actual successful JSON tool-completion
   events rather than matching tool names in prompts or narration. Offline
   fake-executable regressions cover the public `make smoke-pi` entry point.
+- Keep smoke artifacts and printed diagnostics redact optional
+  `PI_CODER_API_KEY` values, including JSON-escaped echoes. Assistant error or
+  aborted events fail the smoke even after successful tool results and exit 0.
+- Unknown or unsupported Pi CLI options produce guidance to select a
+  compatible CLI on `PATH` (tested: 1.6.1), without dropping isolation flags,
+  retrying, or changing the original nonzero exit status.
 
 ### Security and operational limits
 
