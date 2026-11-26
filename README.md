@@ -259,6 +259,11 @@ Coder-specific configuration and independent acceptance checks are documented
 in [`docs/CODING.md`](docs/CODING.md). Release-facing changes are recorded in
 [`CHANGELOG.md`](CHANGELOG.md).
 
+The coder's deterministic loopback smoke uses real installed parent and nested
+Pi processes with fake provider responses and credentials. It exercises tool
+invocation and file/shell checks, not real-model coding quality. See the testing
+guide for its platform requirements and the separate live acceptance workflow.
+
 ## Repository scope
 
 This repository is intended for Pi-native utilities with small implementations

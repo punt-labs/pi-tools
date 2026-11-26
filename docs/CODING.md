@@ -139,6 +139,10 @@ final-report, and missing-target failures are tool errors. A readable target
 and successful worker report still do not establish that the child changed
 the intended file or met the task contract.
 
+Failures reject the tool call with a sanitized error message so the real Pi
+host marks the tool execution as failed. They are not successful tool results
+carrying an `isError` field that the host may ignore.
+
 ## Shell limits and prerequisites
 
 The guard wraps bash commands with GNU coreutils `timeout`. The executable

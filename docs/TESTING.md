@@ -1,8 +1,8 @@
 # Testing
 
 `pi-tools` tests extensions at multiple levels. The default `make check` gate
-is offline and deterministic. Real-relay and Pi smoke tests are explicit,
-external integration tiers.
+is offline and deterministic. Real-relay, real-Pi loopback, and live-model
+checks are separate integration tiers with different prerequisites.
 
 ## Testing pyramid
 
@@ -23,6 +23,10 @@ external integration tiers.
   tools. Requires the Pi binary, configured provider credentials, and tmux for
   the keep smoke. Live coder acceptance also requires independent inspection
   and execution; a worker's successful report is not sufficient.
+- Real-Pi coder loopback smoke: installed parent and nested Pi processes use
+  a deterministic local fake provider, actual file writes, and real guarded
+  shell checks. Requires Pi, Node.js, bash, GNU `timeout`, and Linux process
+  inspection. Uses fake credentials, not a paid model or real provider key.
 
 ## Unit tests
 
@@ -143,6 +147,34 @@ Tool-call evidence alone does not prove the resulting process state. Inspect
 the actual smoke output and cleanup when evaluating its result. This target
 does not establish coder delegation, credential filtering, or independent
 parent verification.
+
+## Real-Pi coder loopback smoke
+
+`tests/smoke-pi-coder.ts` starts a loopback OpenAI-compatible fake provider and
+runs the installed Pi CLI as both parent and nested coder. Scripted responses
+exercise real extension loading and tool execution without asking a live
+model to generate code.
+
+The scenarios cover:
+
+- a child writing the exact fixture file and running a guarded shell check
+- an independent parent shell check of the actual file
+- the configured fake credential reaching provider authentication, but not
+  model conversation text, process arguments, or guarded shell environments
+- reported token usage from deterministic fixture events
+- missing target, missing provider, and missing model as actual Pi tool errors
+- explicit nested extension selection and disabled automatic discovery
+
+Artifacts are retained in `.tmp/smoke-coder-*`, including per-scenario Pi event
+logs and requests. The harness bounds its own subprocess runtime and captured
+output; those test-harness limits do not add a production worker deadline or
+hard output cap to `pi_coder`.
+
+The current process-argument checks use Linux `/proc`. This smoke therefore
+requires Linux; it does not establish macOS execution. It also does not verify
+real-model coding quality, model compliance, provider compatibility beyond
+the fixture, or the full compile/test/integration contract for a real task.
+Those remain separate live validation and parent acceptance requirements.
 
 ## Live coder validation
 

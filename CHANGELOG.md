@@ -20,6 +20,9 @@ Changes are grouped under Unreleased until the first tagged release.
 - Delegated-coding guidance and ADR-012 define the parent's architecture
   ownership and mandatory independent diff, file-scope, test, and integration
   verification before acceptance.
+- A deterministic loopback-provider smoke exercises real installed parent and
+  nested Pi processes, file writes, guarded shell checks, and failure events
+  using fake credentials rather than a paid coding model.
 
 ### Changed
 
