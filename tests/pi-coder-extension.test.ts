@@ -31,6 +31,8 @@ interface Tool {
 		id: string,
 		params: { task: string; target_path: string },
 		signal?: AbortSignal,
+		onUpdate?: (result: Result) => void,
+		ctx?: { cwd: string },
 	): Promise<Result>;
 }
 
@@ -38,7 +40,12 @@ function registeredTool(): Tool {
 	let tool: Tool | undefined;
 	piCoderExtension({ registerTool: (value: Tool) => (tool = value) } as unknown as ExtensionAPI);
 	if (!tool) throw new Error("tool not registered");
-	return tool;
+	const registered = tool;
+	return {
+		...registered,
+		execute: (id, params, signal, onUpdate, ctx = { cwd: process.cwd() }) =>
+			registered.execute(id, params, signal, onUpdate, ctx),
+	};
 }
 
 function fakeChild(stdout: string, code: number | null = 0, stderr = "") {
@@ -148,6 +155,21 @@ describe("pi_coder execution contract", () => {
 		expect(args.join(" ")).not.toContain("fake-coder-key");
 		expect(JSON.stringify(result)).not.toContain("fake-coder-key");
 		expect(result.content[0].text).toContain("awaiting boss verification");
+	});
+
+	it("resolves target and subprocess cwd from the execution context, not the Node process", async () => {
+		const cwd = join(process.cwd(), ".tmp", "other-workspace");
+		await registeredTool().execute(
+			"1",
+			{ task: "write it", target_path: "out.ts" },
+			undefined,
+			undefined,
+			{ cwd },
+		);
+		const [, args, options] = mocks.spawn.mock.calls[0] as [string, string[], { cwd: string }];
+		expect(options.cwd).toBe(cwd);
+		expect(args.at(-1)).toContain(join(cwd, "out.ts"));
+		expect(mocks.readFile).toHaveBeenCalledWith(join(cwd, "out.ts"), "utf8");
 	});
 
 	it.each(["off", "minimal", "low", "medium", "high", "xhigh", "max"])(

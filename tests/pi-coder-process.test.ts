@@ -9,6 +9,8 @@ interface Tool {
 		id: string,
 		params: { task: string; target_path: string },
 		signal?: AbortSignal,
+		onUpdate?: undefined,
+		ctx?: { cwd: string },
 	): Promise<{
 		content: { text: string }[];
 	}>;
@@ -36,7 +38,16 @@ async function setupFakePi(source: string) {
 		registerTool: (registered: Tool) => (tool = registered),
 	} as unknown as ExtensionAPI);
 	if (!tool) throw new Error("tool not registered");
-	return tool;
+	const registered = tool;
+	return {
+		execute: (
+			id: string,
+			params: { task: string; target_path: string },
+			signal?: AbortSignal,
+			onUpdate?: undefined,
+			ctx = { cwd: process.cwd() },
+		) => registered.execute(id, params, signal, onUpdate, ctx),
+	};
 }
 
 async function waitForFile(path: string): Promise<string> {
@@ -53,6 +64,27 @@ async function waitForFile(path: string): Promise<string> {
 }
 
 describe("pi_coder real subprocess boundary", () => {
+	it("writes and runs in the SDK execution directory when it differs from process.cwd", async () => {
+		const tool = await setupFakePi(`
+const fs = require('node:fs');
+if (process.cwd() !== require('node:path').join(__dirname, 'sdk-workspace')) { console.error('wrong execution directory'); process.exit(1); }
+fs.writeFileSync('context-target.ts', JSON.stringify({ cwd: process.cwd(), prompt: process.argv.at(-1) }));
+console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'self-tested in execution directory' }] } }));
+`);
+		const cwd = join(fixture ?? "", "sdk-workspace");
+		await mkdir(cwd);
+		await tool.execute(
+			"1",
+			{ task: "write context-target.ts", target_path: "context-target.ts" },
+			undefined,
+			undefined,
+			{ cwd },
+		);
+		const target = join(cwd, "context-target.ts");
+		const captured = JSON.parse(await readFile(target, "utf8")) as { cwd: string; prompt: string };
+		expect(captured.cwd).toBe(cwd);
+		expect(captured.prompt).toContain(target);
+	});
 	it("inherits the fake generic credential without putting it in argv or prompts", async () => {
 		vi.stubEnv("PI_CODER_API_KEY", "fake-process-key");
 		const tool = await setupFakePi(`

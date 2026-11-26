@@ -27,6 +27,7 @@ interface CoderResult {
 function runCoder(
 	config: CoderConfig,
 	prompt: string,
+	cwd: string,
 	signal: AbortSignal,
 	onProgress: (bytes: number) => void,
 ): Promise<CoderResult> {
@@ -39,6 +40,7 @@ function runCoder(
 			"pi",
 			buildCoderArgs(config.provider, config.model, prompt, BASH_GUARD, config.thinking),
 			{
+				cwd,
 				stdio: ["ignore", "pipe", "pipe"],
 				detached: process.platform !== "win32",
 			},
@@ -202,15 +204,15 @@ export default function piCoderExtension(pi: ExtensionAPI): void {
 			},
 			required: ["task", "target_path"],
 		},
-		async execute(_toolCallId, rawParams, signal, onUpdate) {
+		async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
 			const params = rawParams as { task: string; target_path: string };
-			const target = resolveTargetPath(process.cwd(), params.target_path, isAbsolute, join);
+			const target = resolveTargetPath(ctx.cwd, params.target_path, isAbsolute, join);
 			const prompt = buildCoderPrompt(CODER_SYSTEM, params.task, target);
 			const abort = signal ?? new AbortController().signal;
 			const started = Date.now();
 			try {
 				const config = resolveCoderConfig(process.env);
-				const { stdout, stderr, code } = await runCoder(config, prompt, abort, (bytes) => {
+				const { stdout, stderr, code } = await runCoder(config, prompt, ctx.cwd, abort, (bytes) => {
 					onUpdate?.({
 						content: [
 							{
