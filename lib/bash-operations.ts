@@ -91,7 +91,8 @@ export function createGuardedBashOperations(
 					clearTimeout(groupCheck);
 					try {
 						if (!hasLiveGroup()) {
-							finish();
+							// The exited group's final pipe data can still be pending.
+							drain ??= setTimeout(() => finish(), 100);
 							return;
 						}
 						groupCheck = setTimeout(waitForGroup, 50);
