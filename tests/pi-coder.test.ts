@@ -4,6 +4,7 @@ import {
 	buildCoderArgs,
 	buildCoderPrompt,
 	normalizeCoderOutput,
+	parseCoderOutput,
 	resolveTargetPath,
 	stripFences,
 } from "../lib/pi-coder.js";
@@ -83,8 +84,16 @@ describe("buildCoderArgs", () => {
 			"bifrost",
 			"--model",
 			"ollama/qwen3-coder:30b",
+			"--mode",
+			"json",
 			"--no-session",
 			"--no-approve",
+			"--no-extensions",
+			"--no-context-files",
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-mcp",
+			"--offline",
 			"-p",
 			"hello",
 		]);
@@ -95,6 +104,22 @@ describe("buildCoderArgs", () => {
 		// so every error round-trips through the planner and delegation is
 		// guaranteed to look worse than writing the code directly.
 		expect(buildCoderArgs("bifrost", "m", "t")).not.toContain("--no-tools");
+	});
+	it("loads only the explicitly supplied bash guard extension", () => {
+		const args = buildCoderArgs("provider", "model", "task", "/package/extensions/bash-guard.ts");
+		expect(args).toContain("--no-extensions");
+		expect(args.slice(args.indexOf("-e"), args.indexOf("-e") + 2)).toEqual([
+			"-e",
+			"/package/extensions/bash-guard.ts",
+		]);
+	});
+
+	it("passes an explicit thinking level to the nested agent", () => {
+		const args = buildCoderArgs("bifrost", "m", "t", undefined, "off");
+		expect(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2)).toEqual([
+			"--thinking",
+			"off",
+		]);
 	});
 
 	it("passes the prompt verbatim so shells cannot re-interpret it", () => {
@@ -115,6 +140,86 @@ describe("normalizeCoderOutput", () => {
 
 	it("adds a trailing newline when the coder omits one", () => {
 		expect(normalizeCoderOutput("no-newline")).toBe("no-newline\n");
+	});
+});
+
+describe("parseCoderOutput", () => {
+	it("ignores user and tool text and usage after an assistant report", () => {
+		const stream = [
+			{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "report" }],
+					usage: { input: 2, output: 3 },
+				},
+			},
+			{
+				type: "message_end",
+				message: {
+					role: "toolResult",
+					content: [{ type: "text", text: "tool output" }],
+					usage: { input: 99 },
+				},
+			},
+			{
+				type: "message_end",
+				message: { role: "user", content: [{ type: "text", text: "user text" }] },
+			},
+		]
+			.map((event) => JSON.stringify(event))
+			.join("\n");
+		expect(parseCoderOutput(stream)).toMatchObject({
+			report: "report\n",
+			inputTokens: 2,
+			outputTokens: 3,
+		});
+	});
+	it("does not reuse an intermediate report when the final assistant has no text", () => {
+		const stream = [
+			{
+				type: "message_end",
+				message: { role: "assistant", content: [{ type: "text", text: "starting" }] },
+			},
+			{
+				type: "message_end",
+				message: { role: "assistant", content: [{ type: "thinking", thinking: "unfinished" }] },
+			},
+		]
+			.map((event) => JSON.stringify(event))
+			.join("\n");
+		expect(parseCoderOutput(stream).report.trim()).toBe("");
+	});
+	it("sums usage and returns the final assistant report", () => {
+		const first = JSON.stringify({
+			type: "message_end",
+			message: {
+				content: [{ type: "text", text: "draft" }],
+				usage: { input: 10, output: 3, reasoning: 2 },
+			},
+		});
+		const last = JSON.stringify({
+			type: "message_end",
+			message: {
+				content: [{ type: "text", text: "compiled and passed" }],
+				usage: { input: 20, output: 4, reasoning: 1 },
+			},
+		});
+		expect(parseCoderOutput(first + "\n" + last + "\n")).toEqual({
+			report: "compiled and passed\n",
+			inputTokens: 30,
+			outputTokens: 7,
+			reasoningTokens: 3,
+		});
+	});
+
+	it("retains compatibility with plain-text output", () => {
+		expect(parseCoderOutput("done")).toEqual({
+			report: "done\n",
+			inputTokens: 0,
+			outputTokens: 0,
+			reasoningTokens: 0,
+		});
 	});
 });
 
