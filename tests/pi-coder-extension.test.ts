@@ -49,7 +49,11 @@ function registeredTool(): Tool {
 	};
 }
 
-function fakeChild(stdout: string, code: number | null = 0, stderr = "") {
+function fakeChild(
+	stdout: string | Buffer[],
+	code: number | null = 0,
+	stderr: string | Buffer[] = "",
+) {
 	const child = Object.assign(new EventEmitter(), {
 		stdout: new EventEmitter(),
 		stderr: new EventEmitter(),
@@ -57,8 +61,12 @@ function fakeChild(stdout: string, code: number | null = 0, stderr = "") {
 	});
 	mocks.spawn.mockImplementation(() => {
 		queueMicrotask(() => {
-			child.stdout.emit("data", Buffer.from(stdout));
-			child.stderr.emit("data", Buffer.from(stderr));
+			for (const chunk of typeof stdout === "string" ? [Buffer.from(stdout)] : stdout) {
+				child.stdout.emit("data", chunk);
+			}
+			for (const chunk of typeof stderr === "string" ? [Buffer.from(stderr)] : stderr) {
+				child.stderr.emit("data", chunk);
+			}
 			child.emit("close", code);
 		});
 		return child;
@@ -84,6 +92,49 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("pi_coder execution contract", () => {
+	it("decodes split UTF-8 stdout without corrupting reports or credentials and counts raw stdout bytes", async () => {
+		const fakeKey = "fake-钥匙";
+		vi.stubEnv("PI_CODER_API_KEY", fakeKey);
+		const stdout = Buffer.from(assistant("café.ts self-tested " + fakeKey));
+		const split = stdout.indexOf(Buffer.from("é")) + 1;
+		fakeChild([stdout.subarray(0, split), stdout.subarray(split)]);
+		const updates: Result[] = [];
+		const result = await registeredTool().execute(
+			"1",
+			{ task: "write", target_path: "out.ts" },
+			undefined,
+			(update) => {
+				updates.push(update);
+			},
+		);
+		expect(updates.at(-1)?.content[0].text).toContain(String(stdout.length) + " bytes");
+		expect(result.content[0].text).toContain("café.ts self-tested [REDACTED]");
+		expect(result.content[0].text).not.toContain("�");
+	});
+
+	it("decodes split UTF-8 stderr before redacting non-ASCII fake credentials", async () => {
+		const fakeKey = "fake-钥匙";
+		vi.stubEnv("PI_CODER_API_KEY", fakeKey);
+		const stderr = Buffer.from("provider rejected clé " + fakeKey);
+		fakeChild(
+			"",
+			1,
+			Array.from(stderr, (byte) => Buffer.from([byte])),
+		);
+		const message = await failureMessage(
+			registeredTool().execute("1", { task: "write", target_path: "out.ts" }),
+		);
+		expect(message).toContain("provider rejected clé [REDACTED]");
+		expect(message).not.toContain("�");
+	});
+
+	it("retains the shared raw-wire output cap for multibyte stderr", async () => {
+		const child = fakeChild("", 1, "é".repeat(5 * 1024 * 1024));
+		await expect(
+			registeredTool().execute("1", { task: "write", target_path: "out.ts" }),
+		).rejects.toThrow("output exceeded");
+		expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+	});
 	it("accepts a complete final report after Pi recovers a provider error", async () => {
 		fakeChild(
 			assistant("", { stopReason: "error", errorMessage: "temporary failure" }) +

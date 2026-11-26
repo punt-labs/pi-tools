@@ -45,8 +45,9 @@ function runCoder(
 				detached: process.platform !== "win32",
 			},
 		);
-		let stdout = "";
-		let stderr = "";
+		let stdout: Buffer[] = [];
+		let stderr: Buffer[] = [];
+		let stdoutBytes = 0;
 		let outputBytes = 0;
 		let outputError: Error | undefined;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -78,19 +79,20 @@ function runCoder(
 			outputBytes += buf.length;
 			if (outputBytes <= MAX_OUTPUT_BYTES) return true;
 			outputError = new Error("Coder output exceeded the 8 MiB limit; delegation terminated.");
-			stdout = "";
-			stderr = "";
+			stdout = [];
+			stderr = [];
 			cancel();
 			return false;
 		};
 		child.stdout.on("data", (buf: Buffer) => {
 			if (!collect(buf)) return;
-			stdout += buf.toString("utf8");
-			onProgress(stdout.length);
+			stdout.push(buf);
+			stdoutBytes += buf.length;
+			onProgress(stdoutBytes);
 		});
 		child.stderr.on("data", (buf: Buffer) => {
 			if (!collect(buf)) return;
-			stderr += buf.toString("utf8");
+			stderr.push(buf);
 		});
 		child.on("error", (error) => {
 			cleanup();
@@ -102,8 +104,8 @@ function runCoder(
 			else if (outputError) reject(outputError);
 			else
 				resolve({
-					stdout: redactCredential(stdout),
-					stderr: redactCredential(stderr),
+					stdout: redactCredential(Buffer.concat(stdout).toString("utf8")),
+					stderr: redactCredential(Buffer.concat(stderr).toString("utf8")),
 					code: code ?? -1,
 				});
 		});
