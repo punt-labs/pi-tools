@@ -61,6 +61,9 @@ Helper tests live in `tests/` and cover logic in `lib/`:
   real command completion, and runaway-command termination
 - `markdownlint.test.ts` — repository Markdown remains linted while gitignored
   runtime captures, scratch files, and the deposited tracker guide are excluded
+- `smoke-pi.test.ts` — fake Pi/tmux executables exercise the keep smoke entry
+  point, JSON event validation, exit preservation, timeout escalation, unique
+  session ownership, and artifact creation without live credentials or models
 
 The pure helper cases verify input/output behavior without external services.
 Some cases use controlled mocks or local subprocesses. In particular, the bash
@@ -130,23 +133,41 @@ offline and deterministic.
 
 ## Pi smoke test
 
-The `smoke-pi` target runs `tests/smoke-pi.sh` against a live Pi process in
-JSON print mode. Its scope is the keep tools, not every extension:
+The `smoke-pi` target runs `tests/smoke-pi.sh`, which delegates process handling
+and event validation to the test-only `tests/smoke-keep.ts` runner. It uses a
+live Pi process in JSON print mode. Its scope is the keep tools, not every
+extension:
 
 - pi starts with the keep extension loaded
 - agent is prompted to use keep tools
-- output is checked for tool call evidence
+- output must contain successful `tool_execution_end` events for `keep_run`,
+  `keep_capture`, `keep_stop`, and `keep_list`; tool names in prompts or
+  narration do not count, and failed tool events fail the smoke
 
-Run separately because it requires Pi, tmux, and a configured model provider:
+Run separately because it requires Pi, tmux, a configured model provider, and
+Node.js with `--experimental-strip-types` support:
 
 - `make smoke-pi`
 
 Not included in `make check`.
 
-Tool-call evidence alone does not prove the resulting process state. Inspect
-the actual smoke output and cleanup when evaluating its result. This target
-does not establish coder delegation, credential filtering, or independent
-parent verification.
+The runner bounds actual Pi execution to 30 seconds by default. Set the
+test-only `PI_KEEP_SMOKE_TIMEOUT_S` to a positive finite number to change it.
+Timeout sends TERM to the owned process group, followed by KILL after one
+second if needed, and returns exit 124. Nonzero Pi exits retain their exit code
+when invoking the script directly; `make` reports its own failure status.
+The runner requires no external `timeout` executable.
+
+Each run creates `.tmp/keep-smoke-*` artifacts in its working directory and
+uses a unique tmux name. Cleanup targets only that exact session and the owned
+Pi process group. Captured stdout and stderr each have a 1 MiB test-harness
+limit. These harness limits are not production coder limits.
+
+Successful tool events alone do not prove every resulting process state.
+Inspect the actual smoke output when evaluating its result. This target does
+not establish coder delegation, credential filtering, or independent parent
+verification. Its offline regression suite uses fake executables and never
+contacts the real model provider or host tmux.
 
 ## Real-Pi coder loopback smoke
 

@@ -29,6 +29,16 @@ Changes are grouped under Unreleased until the first tagged release.
 - Markdown lint uses repository npm tooling and excludes gitignored runtime
   captures and scratch files while retaining repository-owned Markdown checks.
 
+### Fixed
+
+- The keep smoke bounds the actual Pi process instead of attempting to run
+  the shell builtin `wait` through `timeout`. It preserves nonzero Pi exits,
+  escalates timeout termination, creates its artifact directory, and cleans
+  only its uniquely named tmux session.
+- Keep smoke validation requires actual successful JSON tool-completion
+  events rather than matching tool names in prompts or narration. Offline
+  fake-executable regressions cover the public `make smoke-pi` entry point.
+
 ### Security and operational limits
 
 - Child agents share the current user's filesystem, network, and tools.
