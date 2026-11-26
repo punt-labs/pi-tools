@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -51,25 +52,19 @@ interface FixtureState {
 	coder: number;
 	requests: ChatRequest[];
 	errors: string[];
-	pid?: number;
 	commands: string[][];
 }
+interface ProcessRecord {
+	pid: number;
+	argv: string[];
+}
 
-async function recordProcessTree(pid: number, state: FixtureState): Promise<void> {
-	try {
-		const argv = (await readFile(`/proc/${String(pid)}/cmdline`, "utf8"))
-			.split("\0")
-			.filter(Boolean);
-		assert.ok(!argv.join(" ").includes(FAKE_KEY), "credential leaked into process argv");
-		state.commands.push(argv);
-		const children = await readFile(`/proc/${String(pid)}/task/${String(pid)}/children`, "utf8");
-		for (const child of children.trim().split(/\s+/).filter(Boolean)) {
-			await recordProcessTree(Number(child), state);
-		}
-	} catch (error) {
-		// Child processes can exit between reading the parent and reading the child.
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-	}
+function processRecords(cwd: string): ProcessRecord[] {
+	return readFileSync(join(cwd, "node-startup.jsonl"), "utf8")
+		.trim()
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as ProcessRecord);
 }
 interface ToolEvent {
 	type: string;
@@ -155,7 +150,6 @@ async function handleRequest(
 		request.headers.authorization === "Bearer " + FAKE_KEY,
 		"wrong fixture authorization header",
 	);
-	if (state.pid) await recordProcessTree(state.pid, state);
 	let body = "";
 	for await (const data of request) {
 		body += String(data);
@@ -216,15 +210,22 @@ async function runPi(cwd: string, env: NodeJS.ProcessEnv, args: string[], state:
 		detached: true,
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	state.pid = child.pid;
 	let stdout = "";
 	let stderr = "";
 	let failure = "";
 	let escalation: NodeJS.Timeout | undefined;
 	const kill = (signal: NodeJS.Signals) => {
-		if (child.pid) {
+		const groups = new Set<number>();
+		if (child.pid) groups.add(child.pid);
+		try {
+			// Core may detach nested Pi into its own group; reap those groups as well.
+			for (const record of processRecords(cwd)) groups.add(record.pid);
+		} catch {
+			// Startup can fail before the probe writes, or a write may still be in progress.
+		}
+		for (const pid of groups) {
 			try {
-				process.kill(-child.pid, signal);
+				process.kill(-pid, signal);
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
 			}
@@ -265,11 +266,16 @@ async function runPi(cwd: string, env: NodeJS.ProcessEnv, args: string[], state:
 		const [code, signal] = (await once(child, "close")) as [number | null, string | null];
 		await writeFile(join(cwd, "parent.jsonl"), stdout);
 		await writeFile(join(cwd, "parent.stderr"), stderr);
+		state.commands = processRecords(cwd).map((record) => record.argv);
 		await writeFile(join(cwd, "requests.json"), JSON.stringify(state.requests, null, 2));
 		await writeFile(join(cwd, "process-argv.json"), JSON.stringify(state.commands, null, 2));
 		await writeFile(join(cwd, "fixture-errors.json"), JSON.stringify(state.errors, null, 2));
 		assert.ok(!stdout.includes(FAKE_KEY), "credential in stdout");
 		assert.ok(!stderr.includes(FAKE_KEY), "credential in stderr");
+		assert.ok(
+			!state.commands.some((argv) => argv.join(" ").includes(FAKE_KEY)),
+			"credential leaked into process argv",
+		);
 		assert.deepEqual(state.errors, [], "loopback provider assertions");
 		assert.equal(failure, "", failure);
 		assert.equal(code, 0, `Pi exited ${String(code)} (${String(signal)}): ${stderr.slice(-2000)}`);
@@ -296,6 +302,15 @@ async function runScenario(repo: string, root: string, scenario: Scenario): Prom
 	const home = join(cwd, "home");
 	const agent = join(home, ".pi", "agent");
 	await mkdir(agent, { recursive: true });
+	const probe = join(cwd, "argv-probe.cjs");
+	// Pi overwrites process.title, erasing /proc's original argv. Observe Node startup
+	// before Pi loads; this does not intercept or replace spawn or the installed CLI.
+	await writeFile(
+		probe,
+		'const fs = require("node:fs");\n' +
+			`fs.appendFileSync(${JSON.stringify(join(cwd, "node-startup.jsonl"))}, ` +
+			'JSON.stringify({pid: process.pid, argv: process.argv}) + "\\n");\n',
+	);
 	const state: FixtureState = { planner: 0, coder: 0, requests: [], errors: [], commands: [] };
 	const server = createServer((request, response) => {
 		void handleRequest(request, response, scenario, state).catch((error: unknown) => {
@@ -339,6 +354,7 @@ async function runScenario(repo: string, root: string, scenario: Scenario): Prom
 			PI_TELEMETRY: "0",
 			PI_CODER_API_KEY: FAKE_KEY,
 			PI_BASH_TIMEOUT_S: "2",
+			NODE_OPTIONS: "--require " + JSON.stringify(probe),
 		};
 		if (scenario !== "missing-provider") env.PI_CODER_PROVIDER = PROVIDER;
 		if (scenario !== "missing-model") env.PI_CODER_MODEL = "coder-fixture";
