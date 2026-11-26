@@ -9,6 +9,7 @@ const cli = fileURLToPath(
 	new URL("../node_modules/markdownlint-cli2/markdownlint-cli2-bin.mjs", import.meta.url),
 );
 const invalidMarkdown = "# Repeated heading\n\n# Repeated heading\n";
+const punctuatedPaths = ["docs/What's new!.md", "docs/guide{draft}.md"];
 let fixture: string;
 
 function writeMarkdown(path: string, content: string): void {
@@ -111,6 +112,43 @@ describe("Markdown lint file selection", () => {
 		expect(result.status, result.stdout + result.stderr).toBe(0);
 		expect(result.stdout).toContain("Linting: 1 file\n");
 		expect(result.stdout).toContain("Summary: 0 issues");
+	});
+
+	it("excludes the deployed tracker guide even when it is tracked", () => {
+		const path = ".punt-labs/punt/guide!.md";
+		writeMarkdown(path, invalidMarkdown);
+		execFileSync("git", ["add", "--force", "--", path], { cwd: fixture });
+		const result = lint();
+		expect(result.status, result.stdout + result.stderr).toBe(0);
+		expect(result.stdout).toContain("Summary: 0 issues");
+		expect(result.stderr).not.toContain(path);
+	});
+
+	it.each(punctuatedPaths)("rejects invalid tracked literal filename %s", (path) => {
+		writeMarkdown(path, invalidMarkdown);
+		execFileSync("git", ["--literal-pathspecs", "add", "--", path], { cwd: fixture });
+		const result = lint();
+		expect(result.status, result.stdout + result.stderr).toBe(2);
+		expect(result.stderr).toContain(path);
+		expect(result.stderr).toContain("MD025");
+	});
+
+	it.each(punctuatedPaths)("accepts valid tracked literal filename %s", (path) => {
+		writeMarkdown(path, "# Valid repository documentation\n");
+		execFileSync("git", ["--literal-pathspecs", "add", "--", path], { cwd: fixture });
+		const result = lint();
+		expect(result.status, result.stdout + result.stderr).toBe(0);
+		expect(result.stdout).toContain("Linting: 2 files\n");
+		expect(result.stdout).toContain("Summary: 0 issues");
+	});
+
+	it("preserves the Markdown linter command's failure exit code", () => {
+		const result = spawnSync(
+			process.execPath,
+			[join(fixture, "lib", "lint-docs.ts"), process.execPath, "-e", "process.exit(7)"],
+			{ cwd: fixture, encoding: "utf8", timeout: 10_000 },
+		);
+		expect(result.status, result.stdout + result.stderr).toBe(7);
 	});
 
 	it.each(["README.md", "docs/guide.md", ".punt-labs/guide.md", "docs/guide [draft].md"])(
