@@ -13,6 +13,7 @@ import {
 } from "../lib/pi-coder.js";
 
 const PREVIEW_BYTES = 400;
+const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 /** Time-bounds every command the coder runs. See lib/bash-guard.ts. */
 const BASH_GUARD = join(dirname(fileURLToPath(import.meta.url)), "bash-guard.ts");
@@ -39,25 +40,54 @@ function runCoder(
 			buildCoderArgs(config.provider, config.model, prompt, BASH_GUARD, config.thinking),
 			{
 				stdio: ["ignore", "pipe", "pipe"],
+				detached: process.platform !== "win32",
 			},
 		);
 		let stdout = "";
 		let stderr = "";
+		let outputBytes = 0;
+		let outputError: Error | undefined;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		const signalChild = (signalName: NodeJS.Signals): void => {
+			if (process.platform !== "win32" && child.pid !== undefined) {
+				try {
+					process.kill(-child.pid, signalName);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill(signalName);
+				}
+			} else child.kill(signalName);
+		};
 		const cancel = (): void => {
-			child.kill("SIGTERM");
-			killTimer = setTimeout(() => child.kill("SIGKILL"), 1000);
+			if (killTimer) return;
+			signalChild("SIGTERM");
+			killTimer = setTimeout(() => signalChild("SIGKILL"), 1000);
 			killTimer.unref();
 		};
 		const cleanup = (): void => {
 			signal.removeEventListener("abort", cancel);
-			if (killTimer) clearTimeout(killTimer);
+			if (killTimer) {
+				// The leader may have exited while descendants without inherited pipes remain.
+				if (process.platform !== "win32") signalChild("SIGKILL");
+				clearTimeout(killTimer);
+			}
+		};
+		const collect = (buf: Buffer): boolean => {
+			if (outputError) return false;
+			outputBytes += buf.length;
+			if (outputBytes <= MAX_OUTPUT_BYTES) return true;
+			outputError = new Error("Coder output exceeded the 8 MiB limit; delegation terminated.");
+			stdout = "";
+			stderr = "";
+			cancel();
+			return false;
 		};
 		child.stdout.on("data", (buf: Buffer) => {
+			if (!collect(buf)) return;
 			stdout += buf.toString("utf8");
 			onProgress(stdout.length);
 		});
 		child.stderr.on("data", (buf: Buffer) => {
+			if (!collect(buf)) return;
 			stderr += buf.toString("utf8");
 		});
 		child.on("error", (error) => {
@@ -67,22 +97,30 @@ function runCoder(
 		child.on("close", (code) => {
 			cleanup();
 			if (signal.aborted) reject(new Error("Coder delegation cancelled."));
-			else resolve({ stdout, stderr, code: code ?? -1 });
+			else if (outputError) reject(outputError);
+			else
+				resolve({
+					stdout: redactCredential(stdout),
+					stderr: redactCredential(stderr),
+					code: code ?? -1,
+				});
 		});
 		signal.addEventListener("abort", cancel, { once: true });
 	});
 }
 
-function textResult(text: string, details: Record<string, unknown> = {}) {
-	return { content: [{ type: "text" as const, text }], details };
+function redactCredential(text: string): string {
+	const credential = process.env.PI_CODER_API_KEY;
+	return credential ? text.replaceAll(credential, "[REDACTED]") : text;
 }
 
-function failureResult(text: string) {
-	return {
-		content: [{ type: "text" as const, text }],
-		details: {},
-		isError: true,
-	};
+function textResult(text: string, details: Record<string, unknown> = {}) {
+	return { content: [{ type: "text" as const, text: redactCredential(text) }], details };
+}
+
+function failCoder(text: string): never {
+	// Pi marks a tool failure only when execute rejects, not from a result property.
+	throw new Error(redactCredential(text));
 }
 
 function errorMessage(error: unknown): string {
@@ -92,7 +130,7 @@ function errorMessage(error: unknown): string {
 /** File contents if the coder produced it, else null. */
 async function readIfPresent(path: string): Promise<string | null> {
 	try {
-		return await readFile(path, "utf8");
+		return redactCredential(await readFile(path, "utf8"));
 	} catch {
 		return null;
 	}
@@ -173,14 +211,16 @@ export default function piCoderExtension(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: "pi_coder streaming " + String(bytes) + " bytes → " + params.target_path,
+								text: redactCredential(
+									"pi_coder streaming " + String(bytes) + " bytes → " + params.target_path,
+								),
 							},
 						],
 						details: {},
 					});
 				});
 				if (code !== 0) {
-					return failureResult(
+					return failCoder(
 						"pi_coder FAILED (exit=" + String(code) + "):\n" + (stderr || stdout).slice(0, 800),
 					);
 				}
@@ -189,15 +229,15 @@ export default function piCoderExtension(pi: ExtensionAPI): void {
 				// clobber that file with the agent's narration.
 				const wallMs = Date.now() - started;
 				const coderOutput = parseCoderOutput(stdout);
-				if (coderOutput.error) return failureResult("pi_coder FAILED: " + coderOutput.error);
+				if (coderOutput.error) return failCoder("pi_coder FAILED: " + coderOutput.error);
 				if (!coderOutput.report.trim()) {
-					return failureResult(
+					return failCoder(
 						"pi_coder FAILED: no final assistant report; awaiting boss verification.",
 					);
 				}
 				const written = await readIfPresent(target);
 				if (written === null) {
-					return failureResult(
+					return failCoder(
 						"pi_coder produced no file at " +
 							params.target_path +
 							" (" +
@@ -210,7 +250,7 @@ export default function piCoderExtension(pi: ExtensionAPI): void {
 				return textResult(
 					"pi_coder target contains " +
 						String(written.length) +
-						" bytes to " +
+						" bytes at " +
 						params.target_path +
 						" (" +
 						String(wallMs) +
@@ -227,7 +267,7 @@ export default function piCoderExtension(pi: ExtensionAPI): void {
 					},
 				);
 			} catch (error) {
-				return failureResult("pi_coder ERROR: " + errorMessage(error));
+				return failCoder("pi_coder ERROR: " + errorMessage(error));
 			}
 		},
 	});
