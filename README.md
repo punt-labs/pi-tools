@@ -16,11 +16,23 @@ Its shell guard gives Pi bash commands a default time limit.
 
 - macOS or Linux
 - Node.js 24 or later and Bash on `PATH`
-- [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
+- A compatible [Pi CLI](https://github.com/earendil-works/pi/tree/main/packages/coding-agent),
+  tested with version **1.6.1**
 - [tmux](https://github.com/tmux/tmux/wiki)
 - [Biff](https://github.com/punt-labs/biff) only when using the Biff bridge
 - POSIX process groups when using the shell guard or coder
 - A configured Pi provider and model when using `pi_coder`
+
+The coder and smoke runners require `--mode json`, `-p`, `-e`, `--offline`,
+`--no-session`, `--no-approve`, `--no-extensions`, `--no-context-files`,
+`--no-skills`, `--no-prompt-templates`, and `--no-mcp`. Explicit `-e` files must
+still load when extension discovery is disabled. Other CLI releases must
+support this behavior; version numbers alone do not prove compatibility.
+
+Ensure the intended `pi` executable is first on `PATH`. A development SDK can
+expose a different CLI: the SDK-provided CLI 0.84.1 rejects `--no-mcp` and is not
+compatible with this flag set. The smoke reports an actionable compatibility
+error without dropping isolation flags, retrying, or changing Pi's exit code.
 
 The guard supervises command groups through Node.js; no GNU `timeout` or
 coreutils installation is required. Linux execution has been checked; macOS

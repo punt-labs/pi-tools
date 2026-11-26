@@ -26,8 +26,8 @@ checks are separate integration tiers with different prerequisites.
   and execution; a worker's successful report is not sufficient.
 - Real-Pi coder loopback smoke: installed parent and nested Pi processes use
   a deterministic local fake provider, actual file writes, and real guarded
-  shell checks. Requires Pi, Node.js 24, Bash, and Linux process
-  inspection. Uses fake credentials, not a paid model or real provider key.
+  shell checks. Requires a compatible Pi CLI, Node.js 24, Bash, and POSIX process
+  groups. Uses fake credentials, not a paid model or real provider key.
 
 ## Unit tests
 
@@ -218,11 +218,14 @@ output. These test-harness limits are separate from `pi_coder`'s 8 MiB combined
 nested-Pi transcript cap. Neither limit creates a production worker deadline
 or a volume cap on shell-command output files and disk spill.
 
-The current process-argument checks use Linux `/proc`. This smoke therefore
-requires Linux; it does not establish macOS execution. It also does not verify
-real-model coding quality, model compliance, provider compatibility beyond
-the fixture, or the full compile/test/integration contract for a real task.
-Those remain separate live validation and parent acceptance requirements.
+Process-argument checks preload `argv-probe.cjs` through `NODE_OPTIONS` and read
+the resulting `node-startup.jsonl`. This records startup arguments before Pi
+changes its process title; the checks do not read Linux `/proc`.
+Execution has been verified on Linux; macOS execution remains unverified.
+The fixture does not verify real-model coding quality, model compliance,
+provider compatibility beyond its scripted responses, or the full
+compile/test/integration contract for a real task. Those remain separate live
+validation and parent acceptance requirements.
 
 ## Live coder validation
 

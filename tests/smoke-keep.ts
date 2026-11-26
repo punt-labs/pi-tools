@@ -171,6 +171,18 @@ async function main(): Promise<number> {
 		}
 		if (code !== 0) {
 			console.error(redactCredential("FAIL: Pi exited with exit " + String(code)));
+			if (
+				/\b(?:unknown|unsupported|unrecognized)\s+(?:command[- ]line\s+)?(?:option|argument)\b/i.test(
+					stderr + "\n" + stdout,
+				)
+			) {
+				console.error(
+					redactCredential(
+						"Use a compatible Pi CLI (tested: 1.6.1). Ensure the intended pi executable is first on PATH; " +
+							"the required isolation flags, including --no-mcp, are not removed or retried.",
+					),
+				);
+			}
 			return code;
 		}
 		checkToolEvents(stdout, name);

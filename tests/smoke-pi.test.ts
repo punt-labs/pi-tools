@@ -21,12 +21,17 @@ beforeEach(async () => {
 		join(bin, "pi"),
 		`#!${process.execPath}
 const fs = require("node:fs");
+fs.appendFileSync(process.env.FIXTURE + "/pi.invocations", "pi\\n");
 fs.writeFileSync(process.env.FIXTURE + "/pi.pid", String(process.pid));
 fs.writeFileSync(process.env.FIXTURE + "/pi.args", JSON.stringify(process.argv.slice(2)));
 const names = ["keep_run", "keep_capture", "keep_stop", "keep_list"];
 const args = process.argv.slice(2);
 const name = /named ([A-Za-z0-9_-]+)/.exec(args[args.indexOf("-p") + 1])[1];
 const scenario = process.env.SCENARIO;
+if (scenario === "unknown-option" || scenario === "unsupported-option") {
+  console.error("error: " + scenario.replace("-", " ") + " '--no-mcp'");
+  process.exit(2);
+}
 if (scenario === "credential-echo") {
   console.log(JSON.stringify({type:"provider_error",message:"Fake provider echoed " + process.env.PI_CODER_API_KEY}));
   console.error("Fake provider echoed " + process.env.PI_CODER_API_KEY);
@@ -89,6 +94,21 @@ async function smoke(scenario: string, extraEnv: NodeJS.ProcessEnv = {}) {
 }
 
 describe("keep smoke entry point", () => {
+	it.each(["unknown-option", "unsupported-option"])(
+		"explains compatible Pi CLI requirements on %s without retrying or dropping flags",
+		async (scenario) => {
+			const result = await smoke(scenario);
+			expect(result.code).toBe(2);
+			expect(result.stdout + result.stderr).toContain("1.6.1");
+			expect(result.stdout + result.stderr).toContain("PATH");
+			expect(result.stdout + result.stderr).toMatch(/compatible Pi CLI/i);
+			expect(await readFile(join(fixture, "pi.invocations"), "utf8")).toBe("pi\n");
+			const args = JSON.parse(await readFile(join(fixture, "pi.args"), "utf8")) as string[];
+			expect(args).toContain("--no-mcp");
+			expect(args).toContain("--no-extensions");
+		},
+	);
+
 	it.each(["error", "aborted"])(
 		"rejects assistant %s after successful tool events without exposing a fake key",
 		async (reason) => {
